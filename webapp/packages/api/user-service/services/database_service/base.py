@@ -72,3 +72,88 @@ class DatabaseService(abc.ABC):
         CouchDB Mango) should override this.
         """
         pass
+
+    # ------------------------------------------------------------------
+    # Bulk APIs.  Default implementations loop the per-doc methods so
+    # every backend works out of the box; backends that natively
+    # support bulk should override for performance (CouchDB _bulk_docs,
+    # DynamoDB BatchWriteItem, etc.).
+    # ------------------------------------------------------------------
+
+    def save_many(
+        self,
+        db_name: str,
+        docs: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """Save multiple documents in a single backend call where supported.
+
+        Args:
+            db_name: Database / collection name.
+            docs:    List of documents.  Each must include an ``_id``;
+                     for updates, also include the current ``_rev``.
+
+        Returns:
+            List of result dicts in the same order as the input,
+            each shaped ``{"id": doc_id, "rev": new_rev, "ok": True}``
+            on success or ``{"id": doc_id, "error": "...", "ok": False}``
+            on per-document failure.  The call as a whole only raises
+            for connection-level errors; per-doc conflicts surface as
+            ``ok=False`` entries so callers can retry just the losers.
+        """
+        results: List[Dict[str, Any]] = []
+        for doc in docs:
+            doc_id = doc.get("_id")
+            if not doc_id:
+                results.append({"ok": False, "id": None, "error": "missing _id"})
+                continue
+            try:
+                saved = self.save(db_name, doc_id, doc)
+                results.append({"ok": True, "id": doc_id, "rev": saved.get("rev")})
+            except Exception as exc:
+                results.append({"ok": False, "id": doc_id, "error": str(exc)})
+        return results
+
+    def delete_many(
+        self,
+        db_name: str,
+        doc_ids: List[str],
+    ) -> List[Dict[str, Any]]:
+        """Delete multiple documents in a single backend call where supported.
+
+        Returns a list of ``{"id": ..., "ok": bool, "error": ...?}``
+        in the same order as ``doc_ids``.  Missing documents count as
+        successful deletes (idempotent — semantically the doc is gone).
+        """
+        results: List[Dict[str, Any]] = []
+        for doc_id in doc_ids:
+            try:
+                self.delete(db_name, doc_id)
+                results.append({"ok": True, "id": doc_id})
+            except Exception as exc:
+                # Missing-doc deletes are not failures.
+                msg = str(exc).lower()
+                if "not found" in msg or "404" in msg:
+                    results.append({"ok": True, "id": doc_id})
+                else:
+                    results.append({"ok": False, "id": doc_id, "error": str(exc)})
+        return results
+
+    def get_many(
+        self,
+        db_name: str,
+        doc_ids: List[str],
+    ) -> Dict[str, Optional[Dict[str, Any]]]:
+        """Fetch multiple documents in a single backend call where supported.
+
+        Returns a dict keyed by doc_id; missing documents are mapped
+        to ``None`` rather than raising.  Backends that support bulk
+        fetch (CouchDB _all_docs?keys=, DynamoDB BatchGetItem) should
+        override; the default loops self.get() and swallows 404s.
+        """
+        out: Dict[str, Optional[Dict[str, Any]]] = {}
+        for doc_id in doc_ids:
+            try:
+                out[doc_id] = self.get(db_name, doc_id)
+            except Exception:
+                out[doc_id] = None
+        return out

@@ -15,6 +15,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from fastapi import HTTPException
 
 from services.database_service import DatabaseService
+from services.access_tracking import AccessAccumulator
 
 
 # Database/collection name for data store records
@@ -32,6 +33,9 @@ class DataStoreService:
 
     def __init__(self, db: DatabaseService):
         self.db = db
+        # Background batcher for access-tracking metadata.  Keeps the
+        # read paths off the write path; see services/access_tracking.py.
+        self._access_accumulator = AccessAccumulator(db, DATA_STORE_DB)
         # Track namespaces we've already ensured indexes for so we
         # don't call ensure_index on every single write.
         self._indexed_namespaces: set = set()
@@ -119,46 +123,64 @@ class DataStoreService:
         agent_name: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
-        """Set a value in the data store."""
+        """Set a value in the data store.
+
+        Optimistic-write: tries save() with no pre-read.  If the doc
+        already exists and we don't have its _rev, the backend's save
+        returns a 409.  We catch that, re-fetch the existing doc,
+        merge our new value into it (preserving created* fields and
+        merging metadata), and retry once.  In the common case
+        (writing a fresh key, or a stale-rev-free update) this is one
+        HTTP round trip instead of two.
+
+        On a second consecutive conflict — which only happens when 3+
+        writers race the same key — we surface the 409 to the caller
+        rather than retry indefinitely.  That choice is deliberate:
+        retrying forever masks bugs that produce contention; one retry
+        absorbs the common race.
+        """
         doc_id = self._make_doc_id(user_id, namespace, key)
         now = datetime.utcnow()
 
-        # Ensure the namespace has proper indexes before writing
         self._ensure_namespace_indexed(user_id, namespace)
 
-        existing = None
+        # Build the doc as-if-fresh first.  If the optimistic write
+        # collides, we'll merge into the existing doc on retry.
+        new_doc = {
+            "_id": doc_id,
+            "userId": user_id,
+            "namespace": namespace,
+            "key": key,
+            "value": value,
+            "metadata": metadata or {},
+            "createdByAgent": agent_name,
+            "lastAccessedByAgent": agent_name,
+            "accessCount": 0,
+            "createdAt": now.isoformat(),
+            "updatedAt": now.isoformat(),
+            "lastAccessedAt": now.isoformat() if agent_name else None,
+        }
+
         try:
-            existing = self.db.get(DATA_STORE_DB, doc_id)
+            saved = self.db.save(DATA_STORE_DB, doc_id, new_doc)
+            new_doc["_rev"] = saved.get("rev")
+            return new_doc
         except HTTPException as e:
-            if e.status_code != 404:
+            if e.status_code != 409:
                 raise
 
-        if existing:
-            record_data = {
-                **existing,
-                "value": value,
-                "updatedAt": now.isoformat(),
-            }
-            if metadata:
-                record_data["metadata"] = {**existing.get("metadata", {}), **metadata}
-            if agent_name:
-                record_data["lastAccessedByAgent"] = agent_name
-                record_data["lastAccessedAt"] = now.isoformat()
-        else:
-            record_data = {
-                "_id": doc_id,
-                "userId": user_id,
-                "namespace": namespace,
-                "key": key,
-                "value": value,
-                "metadata": metadata or {},
-                "createdByAgent": agent_name,
-                "lastAccessedByAgent": agent_name,
-                "accessCount": 0,
-                "createdAt": now.isoformat(),
-                "updatedAt": now.isoformat(),
-                "lastAccessedAt": now.isoformat() if agent_name else None,
-            }
+        # Conflict: doc exists.  Re-fetch, merge, retry.
+        existing = self.db.get(DATA_STORE_DB, doc_id)
+        record_data = {
+            **existing,
+            "value": value,
+            "updatedAt": now.isoformat(),
+        }
+        if metadata:
+            record_data["metadata"] = {**existing.get("metadata", {}), **metadata}
+        if agent_name:
+            record_data["lastAccessedByAgent"] = agent_name
+            record_data["lastAccessedAt"] = now.isoformat()
 
         saved = self.db.save(DATA_STORE_DB, doc_id, record_data)
         record_data["_rev"] = saved.get("rev")
@@ -221,12 +243,12 @@ class DataStoreService:
     ) -> Dict[str, Any]:
         """Return all key-value pairs in a namespace in one query.
 
-        This is much more efficient than list_keys() + get() per key
-        when you need the full contents of a namespace (e.g. loading
-        all files for batch processing).
-
-        Returns:
-            Dict mapping key → value for every record in the namespace.
+        Access tracking, when ``agent_name`` is provided, is deferred
+        to the AccessAccumulator: we record the doc IDs touched and
+        a background task batches the count updates every 10 seconds.
+        Previously this method did an inline save() per doc, turning
+        a one-shot bulk read into N+1 HTTP calls and forking each
+        doc's revision history.
         """
         docs = self.db.find(
             DATA_STORE_DB,
@@ -234,21 +256,17 @@ class DataStoreService:
         )
 
         results = {}
-        now = datetime.utcnow().isoformat()
+        accessed_ids: List[str] = []
         for doc in docs:
             key = doc.get("key", "")
             results[key] = doc.get("value")
-
-            # Update access metadata if agent_name provided
             if agent_name:
-                doc["lastAccessedByAgent"] = agent_name
-                doc["lastAccessedAt"] = now
-                doc["accessCount"] = doc.get("accessCount", 0) + 1
-                doc_id = doc.get("_id", self._make_doc_id(user_id, namespace, key))
-                try:
-                    self.db.save(DATA_STORE_DB, doc_id, doc)
-                except Exception:
-                    pass  # Access tracking is best-effort
+                doc_id = doc.get("_id") or self._make_doc_id(user_id, namespace, key)
+                accessed_ids.append(doc_id)
+
+        if accessed_ids:
+            self._access_accumulator.ensure_started()
+            self._access_accumulator.record_many(accessed_ids, agent_name)
 
         return results
 
@@ -259,12 +277,36 @@ class DataStoreService:
         keys: List[str],
         agent_name: Optional[str] = None
     ) -> Dict[str, Any]:
-        """Get multiple values at once."""
-        results = {}
-        for key in keys:
-            record = self.get(user_id, namespace, key, agent_name)
-            if record:
-                results[key] = record.get("value")
+        """Get multiple values at once.
+
+        Uses the backend's bulk-fetch primitive (CouchDB
+        _all_docs?keys=, etc.) for one round trip regardless of N.
+        Access tracking is deferred to the AccessAccumulator; see
+        get_all() for the rationale.
+        """
+        if not keys:
+            return {}
+
+        doc_ids = [self._make_doc_id(user_id, namespace, k) for k in keys]
+        docs = self.db.get_many(DATA_STORE_DB, doc_ids)
+
+        results: Dict[str, Any] = {}
+        accessed_ids: List[str] = []
+        for key, doc_id in zip(keys, doc_ids):
+            doc = docs.get(doc_id)
+            if doc is None:
+                continue
+            # Defensive: ensure the doc still belongs to this user/namespace.
+            if doc.get("userId") != user_id or doc.get("namespace") != namespace:
+                continue
+            results[key] = doc.get("value")
+            if agent_name:
+                accessed_ids.append(doc_id)
+
+        if accessed_ids:
+            self._access_accumulator.ensure_started()
+            self._access_accumulator.record_many(accessed_ids, agent_name)
+
         return results
 
     def set_many(
@@ -273,21 +315,108 @@ class DataStoreService:
         items: List[Tuple[str, str, Any, Optional[Dict[str, Any]]]],
         agent_name: Optional[str] = None
     ) -> int:
-        """Set multiple values at once."""
+        """Set multiple values at once via the backend's bulk primitive.
+
+        One get_many() to fetch existing docs (so we get _revs and
+        can preserve created* fields), then one save_many() to ship
+        the writes.  Two HTTP round trips total regardless of N,
+        compared to the old loop-over-set() shape which was up to
+        2N + index-ensure overhead.
+
+        Per-doc conflicts surface in the result and are retried once
+        each via set() (which has its own conflict handling).  If
+        retries fail we count them as not-saved and return a smaller
+        ``count``.
+
+        Items are tuples of ``(namespace, key, value, metadata)``.
+        """
+        if not items:
+            return 0
+
+        # Prep: one ensure-index per unique namespace, doc_id list.
+        unique_namespaces = {ns for ns, _, _, _ in items}
+        for ns in unique_namespaces:
+            self._ensure_namespace_indexed(user_id, ns)
+
+        doc_ids = [self._make_doc_id(user_id, ns, key) for ns, key, _, _ in items]
+
+        # One bulk fetch for any existing docs.
+        existing_map = self.db.get_many(DATA_STORE_DB, doc_ids)
+
+        now_iso = datetime.utcnow().isoformat()
+        new_docs: List[Dict[str, Any]] = []
+        # Index from doc_id back to the items tuple so we can retry
+        # the losers individually after the bulk save.
+        item_by_id: Dict[str, Tuple[str, str, Any, Optional[Dict[str, Any]]]] = {}
+
+        for (ns, key, value, metadata), doc_id in zip(items, doc_ids):
+            existing = existing_map.get(doc_id)
+            if existing:
+                doc = {
+                    **existing,
+                    "value": value,
+                    "updatedAt": now_iso,
+                }
+                if metadata:
+                    doc["metadata"] = {**existing.get("metadata", {}), **metadata}
+                if agent_name:
+                    doc["lastAccessedByAgent"] = agent_name
+                    doc["lastAccessedAt"] = now_iso
+            else:
+                doc = {
+                    "_id": doc_id,
+                    "userId": user_id,
+                    "namespace": ns,
+                    "key": key,
+                    "value": value,
+                    "metadata": metadata or {},
+                    "createdByAgent": agent_name,
+                    "lastAccessedByAgent": agent_name,
+                    "accessCount": 0,
+                    "createdAt": now_iso,
+                    "updatedAt": now_iso,
+                    "lastAccessedAt": now_iso if agent_name else None,
+                }
+            new_docs.append(doc)
+            item_by_id[doc_id] = (ns, key, value, metadata)
+
+        results = self.db.save_many(DATA_STORE_DB, new_docs)
+
+        # Count successes, retry losers via set() (has conflict retry).
         count = 0
-        for namespace, key, value, metadata in items:
-            self.set(user_id, namespace, key, value, agent_name, metadata)
-            count += 1
+        for r in results:
+            if r.get("ok"):
+                count += 1
+                continue
+            # Retry — ResourceConflict is the expected reason; other
+            # errors (network etc.) are still worth one retry too.
+            doc_id = r.get("id")
+            tup = item_by_id.get(doc_id)
+            if tup is None:
+                continue
+            ns, key, value, metadata = tup
+            try:
+                self.set(user_id, ns, key, value, agent_name, metadata)
+                count += 1
+            except Exception:
+                pass  # Best-effort; caller can retry the whole batch.
+
         return count
 
     def clear_namespace(self, user_id: str, namespace: str) -> int:
-        """Delete all records in a namespace."""
+        """Delete all records in a namespace via one bulk call.
+
+        Old shape: list_keys() + N delete() calls = N+1 round trips.
+        New shape: list_keys() + one delete_many() = 2 round trips
+        (or 3 because delete_many internally does a get_many to fetch
+        _revs, but that's still O(1) regardless of N).
+        """
         keys = self.list_keys(user_id, namespace)
-        count = 0
-        for key in keys:
-            if self.delete(user_id, namespace, key):
-                count += 1
-        return count
+        if not keys:
+            return 0
+        doc_ids = [self._make_doc_id(user_id, namespace, k) for k in keys]
+        results = self.db.delete_many(DATA_STORE_DB, doc_ids)
+        return sum(1 for r in results if r.get("ok"))
 
 
 class AgentDataStoreProxy:

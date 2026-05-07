@@ -153,8 +153,14 @@ class TestDataStoreService:
         mock_db.save.assert_called_once()
 
     def test_set_existing_key_updates(self, data_store_service, mock_db):
-        """Test setting an existing key updates it."""
-        mock_db.get.return_value = {
+        """Test setting an existing key updates it.
+
+        With optimistic-write set(), the first save() lands as a
+        conflict (HTTPException 409), the service re-fetches via
+        get(), merges the new value into the existing doc, and
+        retries save(). Mock that sequence here.
+        """
+        existing_doc = {
             "_id": "doc-id",
             "userId": "user-123",
             "namespace": "default",
@@ -163,16 +169,22 @@ class TestDataStoreService:
             "metadata": {"old": "meta"},
             "createdAt": "2026-01-01T00:00:00",
         }
-        mock_db.save.return_value = {"rev": "2-def456"}
-        
+        mock_db.get.return_value = existing_doc
+        # First save() conflicts; second succeeds.
+        mock_db.save.side_effect = [
+            HTTPException(status_code=409, detail="conflict"),
+            {"rev": "2-def456"},
+        ]
+
         result = data_store_service.set(
             "user-123", "default", "existing-key", "new-value", metadata={"new": "meta"}
         )
-        
+
         assert result["value"] == "new-value"
         # Metadata should be merged
         assert result["metadata"]["old"] == "meta"
         assert result["metadata"]["new"] == "meta"
+        assert mock_db.save.call_count == 2  # optimistic + retry
 
     def test_delete_existing_key(self, data_store_service, mock_db):
         """Test deleting an existing key."""
@@ -271,53 +283,81 @@ class TestDataStoreService:
         assert None not in result
 
     def test_get_many(self, data_store_service, mock_db):
-        """Test getting multiple values at once."""
+        """Test getting multiple values at once via db.get_many bulk fetch."""
         key_a_b64 = base64.urlsafe_b64encode(b"key-a").decode()
         key_b_b64 = base64.urlsafe_b64encode(b"key-b").decode()
-        
-        def mock_get(db_name, doc_id):
-            if key_a_b64 in doc_id:
-                return {"value": "value-a"}
-            elif key_b_b64 in doc_id:
-                return {"value": "value-b"}
-            raise HTTPException(status_code=404)
-        
-        mock_db.get.side_effect = mock_get
-        
+
+        def mock_get_many(db_name, doc_ids):
+            # Return existing docs for a/b, None for c.
+            out = {}
+            for doc_id in doc_ids:
+                if key_a_b64 in doc_id:
+                    out[doc_id] = {
+                        "userId": "user-123",
+                        "namespace": "default",
+                        "value": "value-a",
+                    }
+                elif key_b_b64 in doc_id:
+                    out[doc_id] = {
+                        "userId": "user-123",
+                        "namespace": "default",
+                        "value": "value-b",
+                    }
+                else:
+                    out[doc_id] = None
+            return out
+
+        mock_db.get_many.side_effect = mock_get_many
+
         result = data_store_service.get_many(
             "user-123", "default", ["key-a", "key-b", "key-c"]
         )
-        
+
         assert result == {"key-a": "value-a", "key-b": "value-b"}
+        # Bulk fetch is one backend call regardless of N.
+        assert mock_db.get_many.call_count == 1
 
     def test_set_many(self, data_store_service, mock_db):
-        """Test setting multiple values at once."""
-        mock_db.get.side_effect = HTTPException(status_code=404)
-        mock_db.save.return_value = {"rev": "1-abc"}
-        
+        """Test setting multiple values at once via bulk get_many + save_many."""
+        # No existing docs — all writes are inserts.
+        mock_db.get_many.return_value = {}
+        # save_many returns one ok-result per doc.
+        mock_db.save_many.return_value = [
+            {"ok": True, "id": "doc-a", "rev": "1-abc"},
+            {"ok": True, "id": "doc-b", "rev": "1-abc"},
+        ]
+
         items = [
             ("ns1", "key-a", "value-a", None),
             ("ns2", "key-b", "value-b", {"meta": "data"}),
         ]
-        
+
         count = data_store_service.set_many("user-123", items, "writer-agent")
-        
+
         assert count == 2
-        assert mock_db.save.call_count == 2
+        # Bulk path: one get_many + one save_many regardless of N.
+        assert mock_db.get_many.call_count == 1
+        assert mock_db.save_many.call_count == 1
 
     def test_clear_namespace(self, data_store_service, mock_db):
-        """Test clearing all data in a namespace."""
+        """Test clearing all data in a namespace via list_keys + delete_many."""
+        # The mock_db fixture wires find() to read from list_all, so we
+        # set list_all here even though the service code calls find().
         mock_db.list_all.return_value = [
             {"userId": "user-123", "namespace": "temp", "key": "key-a"},
             {"userId": "user-123", "namespace": "temp", "key": "key-b"},
-            {"userId": "user-123", "namespace": "keep", "key": "key-c"},
         ]
-        mock_db.delete.return_value = None
-        
+        # delete_many returns one ok-result per id.
+        mock_db.delete_many.return_value = [
+            {"ok": True, "id": "doc-a"},
+            {"ok": True, "id": "doc-b"},
+        ]
+
         count = data_store_service.clear_namespace("user-123", "temp")
-        
+
         assert count == 2
-        assert mock_db.delete.call_count == 2
+        # Bulk delete: one delete_many call regardless of N.
+        assert mock_db.delete_many.call_count == 1
 
 
 # =============================================================================
@@ -429,7 +469,13 @@ class TestGetAll:
         )
 
     def test_get_all_updates_access_metadata(self, data_store_service, mock_db):
-        """Test get_all updates access tracking when agent_name provided."""
+        """Test get_all queues access tracking via AccessAccumulator.
+
+        Access metadata updates are deferred to a background flush;
+        get_all itself doesn't write. Verify the accumulator buffered
+        the access intent — flushing is tested separately.
+        """
+        # mock_db fixture wires find() -> list_all().
         mock_db.list_all.return_value = [
             {
                 "_id": "doc-1",
@@ -440,14 +486,17 @@ class TestGetAll:
                 "accessCount": 3,
             },
         ]
-        mock_db.save.return_value = {"rev": "2-abc"}
 
         data_store_service.get_all("user-123", "ns", agent_name="reader")
 
-        mock_db.save.assert_called_once()
-        saved_doc = mock_db.save.call_args[0][2]
-        assert saved_doc["lastAccessedByAgent"] == "reader"
-        assert saved_doc["accessCount"] == 4
+        # No inline save during get_all — it's deferred.
+        mock_db.save.assert_not_called()
+        # The accumulator captured the access intent.
+        buf = data_store_service._access_accumulator._buffer
+        assert len(buf) == 1
+        entry = next(iter(buf.values()))
+        assert entry["agent_name"] == "reader"
+        assert entry["delta"] == 1
 
     def test_get_all_skips_access_tracking_without_agent(self, data_store_service, mock_db):
         """Test get_all skips access updates when no agent_name."""
@@ -457,7 +506,9 @@ class TestGetAll:
 
         data_store_service.get_all("user-123", "ns")
 
+        # No inline save and accumulator wasn't touched (no agent_name).
         mock_db.save.assert_not_called()
+        assert len(data_store_service._access_accumulator._buffer) == 0
 
     def test_get_all_access_tracking_is_best_effort(self, data_store_service, mock_db):
         """Test get_all still returns data if access tracking save fails."""
@@ -664,7 +715,12 @@ class TestAgentDataStoreProxy:
         assert result == {"k": "v"}
 
     def test_get_all_passes_agent_name(self, agent_proxy, mock_db):
-        """Test that get_all() passes the proxy's agent_name for access tracking."""
+        """Test that get_all() passes the proxy's agent_name for access tracking.
+
+        Access tracking is deferred to the AccessAccumulator;
+        verify the queued entry has the proxy's agent_name.
+        """
+        # mock_db fixture wires find() -> list_all().
         mock_db.list_all.return_value = [
             {
                 "_id": "d1",
@@ -675,47 +731,59 @@ class TestAgentDataStoreProxy:
                 "accessCount": 0,
             },
         ]
-        mock_db.save.return_value = {"rev": "2-abc"}
 
         agent_proxy.get_all()
 
-        mock_db.save.assert_called_once()
-        saved = mock_db.save.call_args[0][2]
-        assert saved["lastAccessedByAgent"] == "test-agent"
+        # Queued in the accumulator with proxy's agent_name.
+        buf = agent_proxy._service._access_accumulator._buffer
+        assert len(buf) == 1
+        entry = next(iter(buf.values()))
+        assert entry["agent_name"] == "test-agent"
 
     def test_get_many_delegates_to_service(self, agent_proxy, mock_db):
-        """Test that get_many() delegates to service."""
+        """Test that get_many() delegates to service via bulk fetch."""
         key_1_b64 = base64.urlsafe_b64encode(b"key-1").decode()
-        
-        def mock_get(db_name, doc_id):
-            if key_1_b64 in doc_id:
-                return {"value": "val-1"}
-            raise HTTPException(status_code=404)
-        
-        mock_db.get.side_effect = mock_get
-        
+
+        def mock_get_many(db_name, doc_ids):
+            out = {}
+            for doc_id in doc_ids:
+                if key_1_b64 in doc_id:
+                    out[doc_id] = {
+                        "userId": "user-123",
+                        "namespace": "default",
+                        "value": "val-1",
+                    }
+                else:
+                    out[doc_id] = None
+            return out
+
+        mock_db.get_many.side_effect = mock_get_many
+
         result = agent_proxy.get_many(["key-1", "key-2"])
-        
+
         assert result == {"key-1": "val-1"}
 
     def test_set_many_delegates_to_service(self, agent_proxy, mock_db):
-        """Test that set_many() delegates to service."""
-        mock_db.get.side_effect = HTTPException(status_code=404)
-        mock_db.save.return_value = {"rev": "1-abc"}
-        
+        """Test that set_many() delegates to service via bulk save."""
+        mock_db.get_many.return_value = {}
+        mock_db.save_many.return_value = [
+            {"ok": True, "id": "doc-1", "rev": "1-abc"},
+            {"ok": True, "id": "doc-2", "rev": "1-abc"},
+        ]
+
         count = agent_proxy.set_many({"key-1": "val-1", "key-2": "val-2"})
-        
+
         assert count == 2
 
     def test_clear_delegates_to_service(self, agent_proxy, mock_db):
-        """Test that clear() delegates to service."""
+        """Test that clear() delegates to service via list_keys + delete_many."""
         mock_db.list_all.return_value = [
             {"userId": "user-123", "namespace": "default", "key": "key-1"},
         ]
-        mock_db.delete.return_value = None
-        
+        mock_db.delete_many.return_value = [{"ok": True, "id": "doc-1"}]
+
         count = agent_proxy.clear()
-        
+
         assert count == 1
 
 

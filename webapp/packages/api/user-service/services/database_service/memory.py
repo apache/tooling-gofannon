@@ -1,4 +1,4 @@
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 from fastapi import HTTPException
 from .base import DatabaseService
 
@@ -29,3 +29,40 @@ class MemoryDBService(DatabaseService):
 
     def list_all(self, db_name: str) -> List[Dict[str, Any]]:
         return list(self.dbs.get(db_name, {}).values())
+
+    def save_many(
+        self,
+        db_name: str,
+        docs: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        if db_name not in self.dbs:
+            self.dbs[db_name] = {}
+        results: List[Dict[str, Any]] = []
+        for doc in docs:
+            doc_id = doc.get("_id")
+            if not doc_id:
+                results.append({"ok": False, "id": None, "error": "missing _id"})
+                continue
+            self.dbs[db_name][doc_id] = doc
+            results.append({"ok": True, "id": doc_id, "rev": "memory-rev"})
+        return results
+
+    def delete_many(
+        self,
+        db_name: str,
+        doc_ids: List[str],
+    ) -> List[Dict[str, Any]]:
+        store = self.dbs.get(db_name, {})
+        results: List[Dict[str, Any]] = []
+        for doc_id in doc_ids:
+            store.pop(doc_id, None)  # idempotent — missing is fine
+            results.append({"ok": True, "id": doc_id})
+        return results
+
+    def get_many(
+        self,
+        db_name: str,
+        doc_ids: List[str],
+    ) -> Dict[str, "Optional[Dict[str, Any]]"]:
+        store = self.dbs.get(db_name, {})
+        return {doc_id: store.get(doc_id) for doc_id in doc_ids}
