@@ -108,12 +108,71 @@ class Agent(CreateAgentRequest):
 
     # model_config = ConfigDict(populate_by_name=True) # model_config is inherited from CreateAgentRequest
         
-class LlmSettings(BaseModel):
-    """LLM settings passed from the UI to control model behavior in agent sandbox."""
+class LlmSettingsForModel(BaseModel):
+    """Per-model LLM parameter overrides."""
     max_tokens: Optional[int] = Field(None, alias="maxTokens")
     temperature: Optional[float] = None
     reasoning_effort: Optional[str] = Field(None, alias="reasoningEffort")
     model_config = ConfigDict(populate_by_name=True)
+
+
+class LlmSettings(BaseModel):
+    """LLM settings passed from the UI to control model behavior at run time.
+
+    The UI builds this from the agent's invokableModels list. Each entry
+    has provider, model, and parameters; this object lets the run-time
+    layer look up overrides by the exact provider/model the agent is
+    calling, so a Sonnet call gets Sonnet's overrides — not Opus's just
+    because Opus happens to be invokableModels[0].
+
+    Two shapes accepted for backwards compatibility:
+
+    1. Per-model map (current):
+         {"perModel": {"bedrock/...sonnet...": {maxTokens: 16384, ...},
+                       "bedrock/...opus...":   {maxTokens: 32768, ...}}}
+
+    2. Legacy single-object (older clients):
+         {"maxTokens": 32768, "temperature": 1.0}
+       Applies to every call_llm regardless of model.
+    """
+    # Per-model overrides, keyed by "<provider>/<model>".
+    per_model: Optional[Dict[str, LlmSettingsForModel]] = Field(
+        default=None, alias="perModel"
+    )
+    # Legacy single-object fields.
+    max_tokens: Optional[int] = Field(None, alias="maxTokens")
+    temperature: Optional[float] = None
+    reasoning_effort: Optional[str] = Field(None, alias="reasoningEffort")
+    model_config = ConfigDict(populate_by_name=True)
+
+    def for_call(self, provider: str, model: str) -> Optional["LlmSettingsForModel"]:
+        """Return the override to apply for this provider/model.
+
+        Per-model wins. Falls back to the legacy single-object fields
+        wrapped in a LlmSettingsForModel for client-shape compatibility.
+        Returns None when no override applies (the agent's parameters
+        flow through unchanged).
+        """
+        if self.per_model:
+            key = f"{provider}/{model}"
+            entry = self.per_model.get(key)
+            if entry is not None:
+                return entry
+            # No exact match for this model. Don't fall through to legacy
+            # because per_model being set signals the client knows about
+            # per-model semantics; it just doesn't have settings for
+            # this particular call.
+            return None
+        # Legacy: synthesize a per-model object from the flat fields.
+        if (self.max_tokens is None
+                and self.temperature is None
+                and self.reasoning_effort is None):
+            return None
+        return LlmSettingsForModel(
+            max_tokens=self.max_tokens,
+            temperature=self.temperature,
+            reasoning_effort=self.reasoning_effort,
+        )
 
 class RunCodeRequest(BaseModel):
     code: str

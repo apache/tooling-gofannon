@@ -615,18 +615,27 @@ const ViewAgent = () => {
       setDialogModel(existing.model);
       const modelParams = providers[existing.provider].models[existing.model].parameters || {};
       setDialogParamSchema(modelParams);
-      // Merge: start from the existing saved params, then make sure any
-      // params the user hadn't set keep their schema defaults. This lets
-      // new params added to a model since the agent was configured show
-      // up with sensible defaults instead of undefined.
+      // Merge: start from schema defaults so that any params added to
+      // the model since the agent was configured show up with sensible
+      // values, then overlay the existing saved params. But: if the
+      // user previously cleared one side of a mutex pair (e.g. cleared
+      // top_p so temperature could be set), the cleared key isn't in
+      // existing.parameters at all — and we must NOT fill a default
+      // for it, or the conflict re-appears every time the dialog
+      // opens. Skip defaults for any param whose mutex partner is
+      // already set in the saved params.
+      const existingParams = existing.parameters || {};
       const merged = {};
       Object.keys(modelParams).forEach(key => {
-        if (modelParams[key].default !== null && modelParams[key].default !== undefined) {
-          if (key === 'top_p' && existing.provider === 'anthropic') return;
-          merged[key] = modelParams[key].default;
-        }
+        const def = modelParams[key].default;
+        if (def === null || def === undefined) return;
+        // Mutex check: if any partner is already in the saved params,
+        // skip the default for this key. Honors the user's clear.
+        const partners = modelParams[key].mutually_exclusive_with || [];
+        if (partners.some(partner => partner in existingParams)) return;
+        merged[key] = def;
       });
-      Object.assign(merged, existing.parameters || {});
+      Object.assign(merged, existingParams);
       setDialogParams(merged);
       setDialogBuiltInTool(existing.builtInTool || '');
       setModelDialogOpen(true);

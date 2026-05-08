@@ -257,15 +257,19 @@ async def _execute_agent_code(
         kwargs.pop("user_id", None)
         kwargs.pop("user_basic_info", None)
 
-        # Apply LLM settings overrides if provided
-        if llm_settings:
-            if llm_settings.max_tokens is not None:
-                parameters = {**parameters, "max_tokens": llm_settings.max_tokens}
-            if llm_settings.temperature is not None:
-                parameters = {**parameters, "temperature": llm_settings.temperature}
-            if llm_settings.reasoning_effort is not None:
-                if llm_settings.reasoning_effort != "disable":
-                    parameters = {**parameters, "reasoning_effort": llm_settings.reasoning_effort}
+        # Apply LLM settings overrides if provided. Look up the
+        # per-model override by exact provider/model, so a Sonnet call
+        # gets Sonnet's overrides rather than whatever was set on the
+        # first invokable model in the list.
+        override = llm_settings.for_call(provider, model) if llm_settings else None
+        if override:
+            if override.max_tokens is not None:
+                parameters = {**parameters, "max_tokens": override.max_tokens}
+            if override.temperature is not None:
+                parameters = {**parameters, "temperature": override.temperature}
+            if override.reasoning_effort is not None:
+                if override.reasoning_effort != "disable":
+                    parameters = {**parameters, "reasoning_effort": override.reasoning_effort}
                 elif "reasoning_effort" in parameters:
                     # User explicitly disabled reasoning, remove it
                     parameters = {k: v for k, v in parameters.items() if k != "reasoning_effort"}

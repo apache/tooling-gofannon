@@ -150,6 +150,27 @@ const ModelConfigDialog = ({
     );
   };
 
+  // Find pairs of mutually-exclusive params that both have values. The
+  // backend rejects these on save with a 422; surfacing the bad state
+  // up-front lets the user fix it in one click.
+  const findActiveMutexConflicts = () => {
+    if (!modelParamSchema) return [];
+    const conflictPairs = [];
+    const seen = new Set();
+    Object.keys(modelParamSchema).forEach((name) => {
+      const partners = getMutuallyExclusiveParams(name);
+      partners.forEach((other) => {
+        const key = [name, other].sort().join('|');
+        if (seen.has(key)) return;
+        if (hasValue(currentModelParams[name]) && hasValue(currentModelParams[other])) {
+          seen.add(key);
+          conflictPairs.push([name, other]);
+        }
+      });
+    });
+    return conflictPairs;
+  };
+
   const builtInToolsForModel =
     providers?.[selectedProvider]?.models?.[selectedModel]?.built_in_tools || [];
   
@@ -199,7 +220,50 @@ const ModelConfigDialog = ({
       ) : node
     );
 
-    if (paramConfig.type === 'float' || paramConfig.type === 'integer') {
+    if (paramConfig.type === 'integer') {
+      // Integers (max_tokens, etc.) use a numeric text input. Sliders
+      // over wide ranges like 1..128000 have unusable precision.
+      const handleIntChange = (e) => {
+        const raw = e.target.value;
+        if (raw === '') {
+          // Empty string -> clear so default applies on save. Keeps the
+          // input usable when the user wants to re-type a value.
+          clearParamValue(paramName);
+          return;
+        }
+        const n = parseInt(raw, 10);
+        if (Number.isNaN(n)) return;
+        handleParamChange(paramName, n);
+      };
+      return wrapWithTooltip(
+        <Box key={paramName} sx={{ mb: 2 }}>
+          <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <Typography variant="body2" color="text.secondary" sx={{ mr: 1 }}>
+              {paramConfig.description || paramName}
+            </Typography>
+            {clearAction}
+          </Box>
+          <TextField
+            fullWidth
+            type="number"
+            size="small"
+            value={controlledValue ?? ''}
+            onChange={handleIntChange}
+            inputProps={{
+              min: paramConfig.min,
+              max: paramConfig.max,
+              step: 1,
+            }}
+            disabled={disabled}
+            helperText={`Max: ${paramConfig.max.toLocaleString()}`}
+          />
+        </Box>
+      );
+    }
+
+    if (paramConfig.type === 'float') {
+      // Floats (temperature, top_p, etc.) keep the slider since their
+      // typical range (0..1) is a natural fit.
       return wrapWithTooltip(
         <Box key={paramName} sx={{ mb: 2 }}>
           <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
@@ -213,10 +277,10 @@ const ModelConfigDialog = ({
             onChange={(e, newValue) => handleParamChange(paramName, newValue)}
             min={paramConfig.min}
             max={paramConfig.max}
-            step={paramConfig.type === 'float' ? (paramConfig.step || 0.1) : 1} 
+            step={paramConfig.step || 0.1}
             marks={
               ((paramConfig.max - paramConfig.min) /
-                (paramConfig.type === 'float' ? (paramConfig.step || 0.1) : 1)) <= 50
+                (paramConfig.step || 0.1)) <= 50
             }
             valueLabelDisplay="auto"
             disabled={disabled}
@@ -395,16 +459,53 @@ const ModelConfigDialog = ({
             {selectedModel && (
               selectedProvider === 'gofannon'
                 ? renderSchemaParamControls()
-                : Object.keys(modelParamSchema)
-                    .filter(paramName => {
-                      const param = modelParamSchema[paramName];
-                      // Skip params with null default
-                      if (param.default === null) return false;
-                      return true;
-                    })
-                    .map(paramName =>
-                      renderParamControl(paramName, modelParamSchema[paramName])
-                    )
+                : (
+                    <>
+                      {findActiveMutexConflicts().length > 0 && (
+                        <Alert
+                          severity="warning"
+                          sx={{ mb: 2 }}
+                          variant="outlined"
+                        >
+                          <Typography variant="body2" sx={{ mb: 1, fontWeight: 500 }}>
+                            Mutually-exclusive parameters both have values.
+                            The agent can&apos;t be saved until one of each pair is cleared.
+                          </Typography>
+                          {findActiveMutexConflicts().map(([a, b]) => (
+                            <Box
+                              key={`${a}|${b}`}
+                              sx={{ display: 'flex', alignItems: 'center', gap: 1, mt: 1 }}
+                            >
+                              <Typography variant="body2" sx={{ flexGrow: 1 }}>
+                                <code>{a}</code> and <code>{b}</code>
+                              </Typography>
+                              <Button
+                                size="small"
+                                onClick={() => clearParamValue(a)}
+                              >
+                                Keep {b}, clear {a}
+                              </Button>
+                              <Button
+                                size="small"
+                                onClick={() => clearParamValue(b)}
+                              >
+                                Keep {a}, clear {b}
+                              </Button>
+                            </Box>
+                          ))}
+                        </Alert>
+                      )}
+                      {Object.keys(modelParamSchema)
+                        .filter(paramName => {
+                          const param = modelParamSchema[paramName];
+                          if (param.default === null) return false;
+                          return true;
+                        })
+                        .map(paramName =>
+                          renderParamControl(paramName, modelParamSchema[paramName])
+                        )}
+                    </>
+                  )
             )}
           </>
         )}

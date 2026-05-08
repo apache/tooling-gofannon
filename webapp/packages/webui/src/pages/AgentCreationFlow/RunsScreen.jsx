@@ -85,18 +85,36 @@ const RunsScreen = () => {
   const [loadingAgent, setLoadingAgent] = useState(false);
   const [loadError, setLoadError] = useState(null);
   
-  // Determine data source - use context if available, otherwise fetch
-  const inputSchema = agentData?.inputSchema || agentFlowContext.inputSchema;
-  const tools = agentData?.tools || agentFlowContext.tools;
-  const generatedCode = agentData?.code || agentFlowContext.generatedCode;
-  const gofannonAgents = agentData?.gofannonAgents || agentFlowContext.gofannonAgents;
+  // Data source: when :agentId is in the URL, the saved agent doc on
+  // the server is the source of truth — context's hardcoded defaults
+  // (inputSchema={inputText:"string"}, outputSchema={outputText:"string"})
+  // would silently mask the user's actual schema if we fell back to
+  // them. So when there's an agentId, we read only from agentData.
+  // The creation-flow case (no agentId yet) still needs context.
+  const inputSchema = agentId
+    ? (agentData?.inputSchema ?? null)
+    : (agentFlowContext.inputSchema);
+  const tools = agentId
+    ? (agentData?.tools ?? null)
+    : (agentFlowContext.tools);
+  const generatedCode = agentId
+    ? (agentData?.code ?? null)
+    : (agentFlowContext.generatedCode);
+  const gofannonAgents = agentId
+    ? (agentData?.gofannonAgents ?? [])
+    : (agentFlowContext.gofannonAgents);
 
   console.log('[RunsScreen] Render - agentData:', !!agentData, 'generatedCode:', !!generatedCode, 'loadingAgent:', loadingAgent);
 
-  // Fetch agent data if we have an agentId and context is empty
+  // Always fetch the agent doc when :agentId is in the URL. The
+  // server is the source of truth for an existing agent; context can
+  // only mirror or be staler than the server. The previous gate
+  // (`!agentFlowContext.generatedCode`) skipped the fetch whenever
+  // context had any state — which produced silent staleness when the
+  // user came to Runs after editing in the same session.
   useEffect(() => {
-    const needsToFetch = agentId && !agentFlowContext.generatedCode;
-    console.log('[RunsScreen] agentId:', agentId, 'contextCode:', !!agentFlowContext.generatedCode, 'needsToFetch:', needsToFetch);
+    const needsToFetch = !!agentId;
+    console.log('[RunsScreen] agentId:', agentId, 'needsToFetch:', needsToFetch);
     
     if (needsToFetch) {
       const fetchAgent = async () => {
@@ -128,7 +146,7 @@ const RunsScreen = () => {
       };
       fetchAgent();
     }
-  }, [agentId, agentFlowContext.generatedCode]);
+  }, [agentId]);
 
   const [formData, setFormData] = useState({});
   const [output, setOutput] = useState(null);
@@ -152,7 +170,14 @@ const RunsScreen = () => {
   // Read the declared output schema so we can send it to the agent runtime for
   // validation. Falls back to null when unavailable — the backend treats
   // a missing output_schema as "skip validation".
-  const outputSchema = agentData?.outputSchema || agentFlowContext.outputSchema || null;
+  // outputSchema reaches the backend's validate_output_against_schema()
+  // and (for newly-generated agents) flows into the composer prompt.
+  // Reading from context defaults here would tell the composer the
+  // schema is {outputText: "string"} and produce agents that always
+  // return that shape, ignoring what the user declared.
+  const outputSchema = agentId
+    ? (agentData?.outputSchema ?? null)
+    : (agentFlowContext.outputSchema ?? null);
 
   // Initialize formData when inputSchema changes. If we have a
   // most-recent run (or are viewing a specific historical run via
@@ -237,17 +262,37 @@ const RunsScreen = () => {
       // so the form can be re-filled later.
       startRun(castInput);
 
-      // Extract LLM settings from agent's invokable models
-      const invokableModel = agentData?.invokableModels?.[0] || agentFlowContext.invokableModels?.[0];
-      const llmSettings = invokableModel?.parameters ? {
-        maxTokens: invokableModel.parameters.max_tokens || invokableModel.parameters.maxTokens,
-        temperature: invokableModel.parameters.temperature,
-        reasoningEffort: invokableModel.parameters.reasoning_effort || invokableModel.parameters.reasoningEffort,
-      } : undefined;
+      // Build per-model LLM settings map from ALL invokable models, not
+      // just [0]. The backend looks up overrides by exact provider/model
+      // when each tools.call_llm() fires, so a Sonnet call picks up
+      // Sonnet's overrides while an Opus call picks up Opus's.
+      // Same staleness reasoning as above: when there's a saved agent,
+      // read from agentData only. The creation-flow case still uses
+      // context.
+      const invokableModels = agentId
+        ? (agentData?.invokableModels ?? [])
+        : (agentFlowContext.invokableModels ?? []);
+      const perModel = {};
+      for (const im of invokableModels) {
+        if (!im?.provider || !im?.model || !im?.parameters) continue;
+        const key = `${im.provider}/${im.model}`;
+        // ?? (nullish coalescing) so a legitimately-zero stored value
+        // doesn't silently get overridden by whichever variant happens
+        // to come second.
+        perModel[key] = {
+          maxTokens: im.parameters.max_tokens ?? im.parameters.maxTokens,
+          temperature: im.parameters.temperature,
+          reasoningEffort: im.parameters.reasoning_effort ?? im.parameters.reasoningEffort,
+        };
+      }
+      const llmSettings = Object.keys(perModel).length > 0
+        ? { perModel }
+        : undefined;
 
-      const friendlyName = agentData?.friendlyName || agentData?.name
-        || agentFlowContext.friendlyName
-        || 'sandbox_agent';
+      // friendlyName: same treatment — server-of-truth when agentId is set.
+      const friendlyName = agentId
+        ? (agentData?.friendlyName || agentData?.name || 'sandbox_agent')
+        : (agentFlowContext.friendlyName || 'sandbox_agent');
 
       // Stream events into the in-flight 'running' run entry as they
       // arrive. The bulk handler below still runs once we have the
