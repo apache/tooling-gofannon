@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "description": "Monorepo for the Gofannon Web Application.",
+  "packageManager": "pnpm@10.28.2",
   "scripts": {
     "dev": "pnpm --filter webui dev",
     "build": "pnpm --filter webui build",
@@ -19,14 +20,17 @@
   },
   "devDependencies": {
     "@playwright/test": "^1.45.1",
-    "pnpm": "^8.0.0"
+    "pnpm": "10.28.2"
   },
   "engines": {
-    "node": ">=18.0.0",
-    "pnpm": ">=8.0.0"
+    "node": ">=20.0.0",
+    "pnpm": ">=10.28.0"
   },
   "dependencies": {
     "firebase": "^12.4.0",
     "react-split-pane": "^0.1.92"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": []
   }
 }

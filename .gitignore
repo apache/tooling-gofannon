@@ -178,3 +178,7 @@ website/docs/
 .vscode/
 .claude/
 .dev-auth.local.yaml
+
+# pnpm
+node_modules/
+.pnpm-store/
