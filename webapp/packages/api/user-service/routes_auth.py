@@ -107,7 +107,7 @@ async def login_redirect(
     if not provider:
         raise HTTPException(status_code=404, detail=f"Unknown provider: {provider_type}")
 
-    state = secrets.token_urlsafe(24)
+    state = secrets.token_hex(24)
     redirect_uri = _default_redirect_uri(request, provider_type)
     authorize_url = provider.get_authorize_url(state, redirect_uri)
 
