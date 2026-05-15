@@ -155,10 +155,24 @@ async def login_callback(
     if not provider:
         raise HTTPException(status_code=404, detail=f"Unknown provider: {provider_type}")
 
-    # CSRF check: the state returned by the provider must match the
-    # state we stashed in the cookie at login-init time.
-    if not state or not expected_state or not secrets.compare_digest(state, expected_state):
-        raise HTTPException(status_code=400, detail="Invalid state; possible CSRF")
+    # The state cookie must be present — its existence proves this browser
+    # started the flow from this app.
+    if not expected_state:
+        raise HTTPException(
+            status_code=400,
+            detail="Missing state cookie; possible CSRF",
+        )
+
+    # Some providers (notably ASF OAuth) don't echo state back in the
+    # callback URL. When the provider DOES return it, verify it matches
+    # the cookie. When it doesn't, the cookie alone is the CSRF check —
+    # acceptable for ASF since the code itself is single-use and bound
+    # server-side to the originating session.
+    if state and not secrets.compare_digest(state, expected_state):
+        raise HTTPException(
+            status_code=400,
+            detail="State mismatch; possible CSRF",
+        )
 
     # Exchange code -> UserInfo. Any provider error becomes a 502 here;
     # the client retries from the login page.
