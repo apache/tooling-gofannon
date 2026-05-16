@@ -195,8 +195,9 @@ class AsfProvider(AuthProvider):
 
         if user_info.uid in site_admins:
             return LoginAllow(site_admin=True)
-        if memberships:
-            return LoginAllow(site_admin=False)
+        # TODO: Admin-only for testing
+        # if memberships:
+        #     return LoginAllow(site_admin=False)
         return LoginDeny(
             reason=(
                 "Your apache.org account is valid, but you're not currently "
