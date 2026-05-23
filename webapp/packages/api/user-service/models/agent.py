@@ -5,6 +5,7 @@ from pydantic.alias_generators import to_camel
 from typing import Dict, Any, List, Literal, Optional, Union
 from .chat import ProviderConfig
 from datetime import datetime
+from time_utils import naive_utc_now
 
 import uuid
 
@@ -103,8 +104,8 @@ class UpdateAgentRequest(BaseModel):
 class Agent(CreateAgentRequest):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()), alias="_id")
     rev: Optional[str] = Field(None, alias="_rev")
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=naive_utc_now)
+    updated_at: datetime = Field(default_factory=naive_utc_now)
 
     # model_config = ConfigDict(populate_by_name=True) # model_config is inherited from CreateAgentRequest
         

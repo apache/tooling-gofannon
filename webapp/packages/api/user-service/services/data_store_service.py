@@ -9,13 +9,13 @@ Data is scoped to users - all agents owned by a user can access the same data po
 
 import json
 import sys
-from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import HTTPException
 
 from services.database_service import DatabaseService
 from services.access_tracking import AccessAccumulator
+from time_utils import naive_utc_now
 
 
 # Database/collection name for data store records
@@ -104,7 +104,7 @@ class DataStoreService:
 
             if agent_name and doc:
                 doc["lastAccessedByAgent"] = agent_name
-                doc["lastAccessedAt"] = datetime.utcnow().isoformat()
+                doc["lastAccessedAt"] = naive_utc_now().isoformat()
                 doc["accessCount"] = doc.get("accessCount", 0) + 1
                 self.db.save(DATA_STORE_DB, doc_id, doc)
 
@@ -140,7 +140,7 @@ class DataStoreService:
         absorbs the common race.
         """
         doc_id = self._make_doc_id(user_id, namespace, key)
-        now = datetime.utcnow()
+        now = naive_utc_now()
 
         self._ensure_namespace_indexed(user_id, namespace)
 
@@ -343,7 +343,7 @@ class DataStoreService:
         # One bulk fetch for any existing docs.
         existing_map = self.db.get_many(DATA_STORE_DB, doc_ids)
 
-        now_iso = datetime.utcnow().isoformat()
+        now_iso = naive_utc_now().isoformat()
         new_docs: List[Dict[str, Any]] = []
         # Index from doc_id back to the items tuple so we can retry
         # the losers individually after the bulk save.
@@ -470,7 +470,7 @@ class AgentDataStoreProxy:
             "op": op,
             "namespace": self._namespace,
             "agent": self._agent_name,
-            "ts": datetime.utcnow().isoformat(),
+            "ts": naive_utc_now().isoformat(),
             **fields,
         }
         self._ops_log.append(entry)

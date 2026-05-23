@@ -6,6 +6,7 @@ from datetime import datetime
 import asyncio
 
 from services.llm_service import call_llm, stream_llm
+from time_utils import naive_utc_now
 
 class ChatService:
     def __init__(self, storage_dir: str = "/tmp/chat_tickets"):
@@ -28,7 +29,7 @@ class ChatService:
             "id": ticket_id,
             "session_id": session_id,
             "status": "processing",
-            "created_at": datetime.utcnow().isoformat(),
+            "created_at": naive_utc_now().isoformat(),
             "model": model,
             "messages": messages,
             "config": config,
@@ -87,7 +88,7 @@ class ChatService:
                 "finish_reason": "stop",
                 "thoughts": thoughts
             }
-            ticket_data["completed_at"] = datetime.utcnow().isoformat()
+            ticket_data["completed_at"] = naive_utc_now().isoformat()
 
             with open(ticket_path, 'w') as f:
                 json.dump(ticket_data, f)
@@ -99,7 +100,7 @@ class ChatService:
 
             ticket_data["status"] = "failed"
             ticket_data["error"] = str(e)
-            ticket_data["completed_at"] = datetime.utcnow().isoformat()
+            ticket_data["completed_at"] = naive_utc_now().isoformat()
 
             with open(ticket_path, 'w') as f:
                 json.dump(ticket_data, f)
@@ -166,7 +167,7 @@ class ChatService:
         """Clean up old ticket files"""
         from datetime import timedelta
         
-        cutoff_time = datetime.utcnow() - timedelta(hours=max_age_hours)
+        cutoff_time = naive_utc_now() - timedelta(hours=max_age_hours)
         
         for ticket_file in self.storage_dir.glob("*.json"):
             try:

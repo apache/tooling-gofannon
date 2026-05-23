@@ -3,7 +3,6 @@ import asyncio
 from services.log_redaction import redact, redact_in_place
 import boto3
 from botocore.exceptions import ClientError
-from datetime import datetime
 import json
 import os
 from typing import Any, Dict, List, Optional
@@ -16,6 +15,7 @@ from starlette.requests import Request
 from starlette.responses import Response
 import time
 from fastapi.responses import JSONResponse
+from time_utils import naive_utc_now
 
 
 # --- Abstract Base Class for Providers ---
@@ -86,7 +86,7 @@ class AWSCloudWatchLogsProvider(LogProvider):
             payload['metadata'] = json.dumps(payload['metadata'], default=str)
 
         log_event = {
-            'timestamp': int(datetime.utcnow().timestamp() * 1000),
+            'timestamp': int(naive_utc_now().timestamp() * 1000),
             'message': json.dumps(payload, default=str)
         }
 
@@ -203,7 +203,7 @@ class ObservabilityService:
         scrubbed_metadata = redact_in_place(metadata) if metadata else {}
 
         raw_payload = {
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": naive_utc_now().isoformat(),
             "level": level.upper(),
             "eventType": event_type,
             "service": service,
