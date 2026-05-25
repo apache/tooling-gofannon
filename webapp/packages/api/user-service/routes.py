@@ -63,6 +63,7 @@ from services.mcp_client_service import McpClientService, get_mcp_client_service
 from services.observability_service import (
     ObservabilityService,
     get_observability_service,
+    get_request_user_id,
     get_sanitized_request_data,
 )
 from services.user_service import UserService
@@ -227,7 +228,7 @@ async def log_client_event(
     logger: ObservabilityService = Depends(get_logger)
 ):
     """Receives and logs an event from the frontend client."""
-    user_id = getattr(request.state, 'user', {}).get('uid', 'anonymous')
+    user_id = get_request_user_id(request)
 
     metadata = payload.metadata or {}
     metadata['client_host'] = request.client.host if request.client else "unknown"

@@ -428,6 +428,7 @@ async def process_chat(ticket_id: str, request: ChatRequest, user: dict, req: Re
     db_service = get_database_service(settings)
     user_service = get_user_service(db_service)
     logger = get_observability_service()
+    log_user_id = user.get("uid") or "anonymous"
     user_basic_info = {
         "email": user.get("email"),
         "name": user.get("name") or user.get("displayName"),
@@ -452,6 +453,7 @@ async def process_chat(ticket_id: str, request: ChatRequest, user: dict, req: Re
                 "agent_chat_request",
                 f"Initiating Agent call to {request.model}",
                 metadata={"request": get_sanitized_request_data(req)},
+                user_id=log_user_id,
             )
             agent_friendly_name = request.model
 
@@ -518,6 +520,7 @@ async def process_chat(ticket_id: str, request: ChatRequest, user: dict, req: Re
                 "llm_request",
                 f"Initiating LLM call to {request.provider}/{request.model}",
                 metadata={"request": get_sanitized_request_data(req)},
+                user_id=log_user_id,
             )
 
             content, thoughts = await call_llm(
@@ -549,6 +552,7 @@ async def process_chat(ticket_id: str, request: ChatRequest, user: dict, req: Re
             "background_task_failure",
             f"Chat processing failed for ticket {ticket_id}: {e}",
             metadata={"traceback": traceback.format_exc(), "request": get_sanitized_request_data(req)},
+            user_id=log_user_id,
         )
         if "ticket_data" not in locals():
             ticket_data = db_service.get("tickets", ticket_id)

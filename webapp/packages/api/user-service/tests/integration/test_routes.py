@@ -200,6 +200,11 @@ def test_log_client_enriches_metadata_with_dependency_overrides():
     app.dependency_overrides[get_db] = lambda: fake_db
     app.dependency_overrides[get_current_user] = override_current_user
 
+    @app.middleware("http")
+    async def inject_user(request: Request, call_next):
+        request.state.user = {"uid": "user-123"}
+        return await call_next(request)
+
     client = TestClient(app)
     try:
         response = client.post(
@@ -219,6 +224,7 @@ def test_log_client_enriches_metadata_with_dependency_overrides():
         assert metadata["extra"] == "value"
         assert metadata["client_host"] == "testclient"
         assert metadata["user_agent"] == "TestAgent/1.0"
+        assert fake_logger.log.call_args.kwargs["user_id"] == "user-123"
     finally:
         app.dependency_overrides = {}
 
