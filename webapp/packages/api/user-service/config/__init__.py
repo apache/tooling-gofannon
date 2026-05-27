@@ -73,6 +73,7 @@ class Settings:
     # Phase B: pluggable auth providers. See auth/ module and docs/PHASE_B.md.
     # Disabled by default — legacy Firebase path is the only enabled path
     # until a site operator sets AUTH_CONFIG_PATH or the APP_ENV.
+    AUTH_CONFIG_PATH: str | None = os.getenv("AUTH_CONFIG_PATH")
     AUTH_CONFIG: dict = _load_auth_config()
 
 
