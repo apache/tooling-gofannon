@@ -5,7 +5,6 @@ import json
 import os
 import traceback
 import warnings
-from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 import httpx
@@ -37,6 +36,7 @@ from services.data_store_service import (
     AgentDataStoreProxy,
     get_data_store_service,
 )
+from time_utils import naive_utc_now
 from typing import Generator
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token", auto_error=False)
@@ -436,7 +436,7 @@ async def process_chat(ticket_id: str, request: ChatRequest, user: dict, req: Re
         # Update ticket status
         ticket_data = {
             "status": "processing",
-            "created_at": datetime.utcnow().isoformat(),  # Use isoformat for JSON serialization
+            "created_at": naive_utc_now().isoformat(),  # Use isoformat for JSON serialization
             "request": request.dict(by_alias=True),
         }
         db_service.save("tickets", ticket_id, dict(ticket_data))
@@ -534,7 +534,7 @@ async def process_chat(ticket_id: str, request: ChatRequest, user: dict, req: Re
         completed_ticket_data = {
             **ticket_data,
             "status": "completed",
-            "completed_at": datetime.utcnow().isoformat(),
+            "completed_at": naive_utc_now().isoformat(),
             "result": {
                 "content": content,
                 "thoughts": thoughts,
@@ -556,7 +556,7 @@ async def process_chat(ticket_id: str, request: ChatRequest, user: dict, req: Re
         ticket_data.update(
             {
                 "status": "failed",
-                "completed_at": datetime.utcnow().isoformat(),
+                "completed_at": naive_utc_now().isoformat(),
                 "error": str(e),
             }
         )

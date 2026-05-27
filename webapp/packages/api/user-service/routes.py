@@ -1,4 +1,3 @@
-from datetime import datetime
 import asyncio
 import json
 import traceback
@@ -67,6 +66,7 @@ from services.observability_service import (
     get_sanitized_request_data,
 )
 from services.user_service import UserService
+from time_utils import naive_utc_now
 
 
 router = APIRouter()
@@ -447,12 +447,12 @@ async def update_session_config(session_id: str, config: ProviderConfig, db: Dat
         session_doc = db.get("sessions", session_id)
     except HTTPException as e:
         if e.status_code == 404:
-            session_doc = {"created_at": datetime.utcnow().isoformat()}
+            session_doc = {"created_at": naive_utc_now().isoformat()}
         else:
             raise
 
     session_doc["provider_config"] = config.dict()
-    session_doc["updated_at"] = datetime.utcnow().isoformat()
+    session_doc["updated_at"] = naive_utc_now().isoformat()
 
     db.save("sessions", session_id, session_doc)
     return {"message": "Configuration updated", "session_id": session_id}
@@ -586,7 +586,7 @@ async def update_agent(
         updated_agent.created_at = existing_doc["createdAt"]
     elif "created_at" in existing_doc:
         updated_agent.created_at = existing_doc["created_at"]
-    updated_agent.updated_at = datetime.utcnow()
+    updated_agent.updated_at = naive_utc_now()
 
     saved_doc_data = updated_agent.model_dump(by_alias=True, mode="json")
     saved_doc_data["_rev"] = existing_doc.get("_rev")

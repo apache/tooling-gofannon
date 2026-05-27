@@ -3,13 +3,14 @@ from __future__ import annotations
 
 import json
 import tempfile
-from datetime import datetime, timedelta
+from datetime import timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from services.chat_service import ChatService
+from time_utils import naive_utc_now
 
 
 pytestmark = pytest.mark.unit
@@ -245,7 +246,7 @@ async def test_stream_chat_error(chat_service):
 def test_cleanup_old_tickets(chat_service, temp_storage):
     """Test cleanup of old ticket files."""
     # Create some test tickets with different ages
-    now = datetime.utcnow()
+    now = naive_utc_now()
     old_time = now - timedelta(hours=25)
     recent_time = now - timedelta(hours=1)
 
