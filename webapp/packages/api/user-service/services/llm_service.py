@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import random
 from config import settings
 from config.provider_config import PROVIDER_CONFIG
 from services.database_service import get_database_service
@@ -23,6 +24,18 @@ DEFAULT_LLM_TIMEOUT = int(os.getenv("LLM_TIMEOUT_SECONDS", "600"))
 
 # Max retries on timeout. Override with LLM_TIMEOUT_RETRIES env var.
 MAX_TIMEOUT_RETRIES = int(os.getenv("LLM_TIMEOUT_RETRIES", "0"))
+
+# Max retries on rate-limit / 429. Override with LLM_RATE_LIMIT_RETRIES.
+# Bedrock and OpenAI both throttle on a per-minute token-bucket, so this
+# needs real backoff with jitter — an immediate retry just hits the same
+# empty bucket. Five attempts with exponential backoff (1, 2, 4, 8, 16s
+# + jitter) gives roughly 30 seconds of patience per call, enough to
+# ride through most quota refills.
+MAX_RATE_LIMIT_RETRIES = int(os.getenv("LLM_RATE_LIMIT_RETRIES", "5"))
+
+# Cap on individual backoff sleep, regardless of attempt number.
+RATE_LIMIT_BACKOFF_CAP_SECONDS = int(os.getenv("LLM_RATE_LIMIT_BACKOFF_CAP", "60"))
+
 
 def _extract_response_cost(response_obj: Any) -> Optional[float]:
     standard_logging = None
@@ -294,24 +307,75 @@ async def call_llm(
         if reasoning_effort != 'disable':
             kwargs['reasoning_effort'] = reasoning_effort
 
+        # Retry loop. Two exception classes are retryable here:
+        #   - litellm.Timeout       — slow network or model; modest linear backoff.
+        #   - litellm.RateLimitError — provider throttling (Bedrock 429,
+        #     OpenAI 429); needs slow exponential backoff with jitter so
+        #     parallel callers don't synchronise their retries into a
+        #     thundering herd.
+        # Other exceptions fall through to the error-classifier branch
+        # below (auth, context window, generic). Those are not retryable.
         last_exception = None
-        for attempt in range(1 + MAX_TIMEOUT_RETRIES):
+        max_attempts = 1 + MAX_TIMEOUT_RETRIES + MAX_RATE_LIMIT_RETRIES
+        timeout_attempts_used = 0
+        rate_limit_attempts_used = 0
+
+        for attempt in range(max_attempts):
             try:
                 response = await litellm.acompletion(**kwargs)
                 break  # Success
             except litellm.Timeout as e:
                 last_exception = e
-                if attempt < MAX_TIMEOUT_RETRIES:
-                    wait_secs = 5 * (attempt + 1)
+                if timeout_attempts_used < MAX_TIMEOUT_RETRIES:
+                    timeout_attempts_used += 1
+                    wait_secs = 5 * timeout_attempts_used
                     print(
-                        f"  Timeout on attempt {attempt + 1}/{1 + MAX_TIMEOUT_RETRIES} "
+                        f"  Timeout on attempt {attempt + 1} "
                         f"for {model_string} (timeout={effective_timeout}s). "
                         f"Retrying in {wait_secs}s...",
                         flush=True,
                     )
                     await asyncio.sleep(wait_secs)
                     continue
-                # Final attempt failed — fall through to error handling
+                raise
+            except litellm.RateLimitError as e:
+                last_exception = e
+                if rate_limit_attempts_used < MAX_RATE_LIMIT_RETRIES:
+                    # Exponential backoff with jitter. The 2**n curve
+                    # plus uniform(0, n+1) jitter spreads parallel
+                    # callers' retries across time so the next attempt
+                    # batch doesn't arrive at the provider as
+                    # synchronously as the failed batch did.
+                    backoff = min(
+                        RATE_LIMIT_BACKOFF_CAP_SECONDS,
+                        (2 ** rate_limit_attempts_used)
+                        + random.uniform(0, rate_limit_attempts_used + 1),
+                    )
+                    rate_limit_attempts_used += 1
+                    print(
+                        f"  RateLimit on attempt {attempt + 1} "
+                        f"for {model_string}; sleeping {backoff:.1f}s "
+                        f"(retry {rate_limit_attempts_used}/{MAX_RATE_LIMIT_RETRIES})",
+                        flush=True,
+                    )
+                    await asyncio.sleep(backoff)
+                    continue
+                # Exhausted rate-limit retries. Log and re-raise so the
+                # caller can decide whether to apply a domain-specific
+                # fallback (e.g., the bundle's score=5 default for failed
+                # relevance batches).
+                observability = get_observability_service()
+                observability.log_exception(
+                    e,
+                    user_id=user_id,
+                    metadata={
+                        "context": "litellm.acompletion",
+                        "model": kwargs.get('model'),
+                        "provider": provider,
+                        "tools": kwargs.get('tools'),
+                        "rate_limit_retries_exhausted": MAX_RATE_LIMIT_RETRIES,
+                    }
+                )
                 raise
             except Exception as e:
                 observability = get_observability_service()
