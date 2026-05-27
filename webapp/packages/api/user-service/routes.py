@@ -108,15 +108,15 @@ async def _verify_session_cookie(request: Request, sid: str) -> Optional[dict]:
 
 
 async def _verify_firebase_token(request: Request, token: str):
+    if not token:
+        request.state.user = {"uid": "anonymous"}
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
     try:
         from firebase_admin import auth
     except Exception as exc:  # pragma: no cover - optional dependency
         request.state.user = {"uid": "auth-error"}
         raise HTTPException(status_code=500, detail=f"Authentication error: {exc}")
-
-    if not token:
-        request.state.user = {"uid": "anonymous"}
-        raise HTTPException(status_code=401, detail="Not authenticated")
 
     try:
         decoded_token = auth.verify_id_token(token)
@@ -135,12 +135,13 @@ async def get_current_user(request: Request, token: str = Depends(oauth2_scheme)
     """
     Dependency to authenticate a request. Supports two modes:
 
-      1. Session cookie (``gofannon_sid``) — checked first.
-      2. Legacy Firebase bearer token — fallback.
+      1. Session cookie (``gofannon_sid``) -- checked first.
+      2. Legacy Firebase bearer token -- fallback when ``APP_ENV`` is
+         ``firebase``.
 
-    If neither is present, behavior depends on ``APP_ENV``:
-      - ``firebase``: 401
-      - otherwise: returns a local-dev-user stub (same as before)
+    If neither is present, returns 401. There is no unauthenticated
+    fallthrough; dev users get a session cookie through the dev_stub
+    provider's picker page.
 
     Attaches the user object to request.state for observability.
     """
@@ -150,22 +151,18 @@ async def get_current_user(request: Request, token: str = Depends(oauth2_scheme)
         user = await _verify_session_cookie(request, sid)
         if user:
             return user
-        # Cookie present but invalid/expired — don't fall through to
+        # Cookie present but invalid/expired -- don't fall through to
         # Firebase with stale cookie. Return 401 so the client clears it.
         raise HTTPException(status_code=401, detail="Session expired or invalid")
 
-    # 2) Legacy Firebase path (unchanged)
-    if settings.APP_ENV != "firebase":
-        if settings.AUTH_CONFIG_PATH:
-            raise HTTPException(
-                status_code=401,
-                detail="Not authenticated. Session cookie missing or invalid.",
-            )
-        user = {"uid": "local-dev-user", "auth_mode": "dev_stub"}
-        request.state.user = user
-        return user
+    # 2) Legacy Firebase path
+    if settings.APP_ENV == "firebase":
+        return await _verify_firebase_token(request, token)
 
-    return await _verify_firebase_token(request, token)
+    raise HTTPException(
+        status_code=401,
+        detail="Not authenticated. Session cookie missing or invalid.",
+    )
 
 
 class ListMcpToolsRequest(BaseModel):

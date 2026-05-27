@@ -65,6 +65,12 @@ class FakeUserService:
         )
 
 
+def _override_current_user(request: Request):
+    user = {"uid": "user-123", "email": "user@example.com", "auth_mode": "test"}
+    request.state.user = user
+    return user
+
+
 def test_provider_routes_return_data_and_404(monkeypatch):
     import routes as routes_module
 
@@ -79,27 +85,31 @@ def test_provider_routes_return_data_and_404(monkeypatch):
     monkeypatch.setattr(routes_module, "get_available_providers", lambda user_id=None, user_basic_info=None: fake_providers)
 
     app = create_app()
+    app.dependency_overrides[get_current_user] = _override_current_user
     client = TestClient(app)
 
-    assert client.get("/providers").json() == fake_providers
+    try:
+        assert client.get("/providers").json() == fake_providers
 
-    response = client.get("/providers/openai")
-    assert response.status_code == 200
-    assert response.json() == fake_providers["openai"]
+        response = client.get("/providers/openai")
+        assert response.status_code == 200
+        assert response.json() == fake_providers["openai"]
 
-    assert client.get("/providers/missing").status_code == 404
+        assert client.get("/providers/missing").status_code == 404
 
-    response = client.get("/providers/openai/models")
-    assert response.status_code == 200
-    assert response.json() == ["gpt-4"]
+        response = client.get("/providers/openai/models")
+        assert response.status_code == 200
+        assert response.json() == ["gpt-4"]
 
-    assert client.get("/providers/missing/models").status_code == 404
+        assert client.get("/providers/missing/models").status_code == 404
 
-    response = client.get("/providers/openai/models/gpt-4")
-    assert response.status_code == 200
-    assert response.json() == {"context_length": 8192}
+        response = client.get("/providers/openai/models/gpt-4")
+        assert response.status_code == 200
+        assert response.json() == {"context_length": 8192}
 
-    assert client.get("/providers/openai/models/unknown").status_code == 404
+        assert client.get("/providers/openai/models/unknown").status_code == 404
+    finally:
+        app.dependency_overrides = {}
 
 
 def test_user_routes_use_dependency_overrides():
@@ -232,6 +242,7 @@ def test_session_config_routes_create_read_delete():
 
     fake_db = FakeDb()
     app.dependency_overrides[get_db] = lambda: fake_db
+    app.dependency_overrides[get_current_user] = _override_current_user
 
     client = TestClient(app)
     try:
@@ -256,3 +267,69 @@ def test_session_config_routes_create_read_delete():
         assert response.json()["message"] == "Session deleted"
     finally:
         app.dependency_overrides = {}
+
+
+def test_user_routes_reject_missing_session(monkeypatch):
+    app = create_app()
+    client = TestClient(app)
+
+    for app_env in ("local", "dev", "test", "production", "firebase"):
+        monkeypatch.setattr(settings, "APP_ENV", app_env)
+        response = client.get("/users/me")
+        assert response.status_code == 401
+
+
+def test_expired_session_cookie_returns_401(monkeypatch):
+    import routes as routes_module
+
+    async def missing_session(request: Request, sid: str):
+        return None
+
+    monkeypatch.setattr(routes_module, "_verify_session_cookie", missing_session)
+
+    app = create_app()
+    client = TestClient(app)
+    response = client.get("/users/me", cookies={"gofannon_sid": "expired"})
+
+    assert response.status_code == 401
+    assert response.json()["detail"] == "Session expired or invalid"
+
+
+def test_dev_stub_picker_returns_404_outside_dev_env(monkeypatch):
+    auth_config = {
+        "providers": [
+            {
+                "type": "dev_stub",
+                "enabled": True,
+                "config": {
+                    "users": [
+                        {
+                            "uid": "alice",
+                            "display_name": "Alice Dev",
+                            "email": "alice@example.com",
+                            "workspaces": [],
+                        }
+                    ]
+                },
+            }
+        ],
+        "site_admins": [],
+        "session_ttl_hours": 24,
+        "workspace_refresh_minutes": 15,
+        "legacy_firebase_enabled": True,
+    }
+    monkeypatch.setattr(settings, "APP_ENV", "production")
+    monkeypatch.setattr(settings, "AUTH_CONFIG", auth_config)
+
+    app = create_app()
+    client = TestClient(app)
+    response = client.get(
+        "/auth/dev-stub-picker",
+        params={
+            "state": "state",
+            "redirect_uri": "http://test/auth/callback/dev_stub",
+            "users": "alice",
+        },
+    )
+
+    assert response.status_code == 404
