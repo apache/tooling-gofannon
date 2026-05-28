@@ -284,7 +284,16 @@ class ObservabilityMiddleware(BaseHTTPMiddleware):
 
             db = get_database_service(settings)
             session = await get_session_service(db).get_by_id(sid)
-        except Exception:
+        except Exception as exc:
+            # Observability middleware must NEVER fail a request. A broken
+            # session service or DB outage downgrades us to "anonymous"
+            # logs, which is the right tradeoff -- but leave a debug-level
+            # breadcrumb so it isn't completely silent if something starts
+            # going wrong.
+            import logging
+            logging.getLogger(__name__).debug(
+                "Session lookup failed in ObservabilityMiddleware: %r", exc,
+            )
             return
 
         if session:
