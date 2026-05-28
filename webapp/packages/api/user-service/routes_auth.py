@@ -18,7 +18,7 @@ from typing import Optional
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
-from auth import get_registry
+from auth import DEV_STUB_ALLOWED_ENVS, get_registry
 from auth.base import LoginAllow, LoginDeny
 from config import settings
 from dependencies import get_db
@@ -33,7 +33,6 @@ from services.session_service import SessionService, get_session_service
 
 
 router = APIRouter()
-DEV_STUB_ALLOWED_ENVS = {"local", "dev", "test"}
 
 
 # ---------------------------------------------------------------------------

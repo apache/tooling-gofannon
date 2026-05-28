@@ -29,7 +29,10 @@ _PROVIDER_CLASSES: Dict[str, Type[AuthProvider]] = {
     "google": GoogleProvider,
     "microsoft": MicrosoftProvider,
 }
-_DEV_STUB_ALLOWED_ENVS = {"local", "dev", "test"}
+# Environments where the dev_stub auth provider is allowed to be enabled.
+# Imported by routes_auth.py for the dev_stub picker route guard, so the
+# allowlist has one source of truth.
+DEV_STUB_ALLOWED_ENVS = {"local", "dev", "test"}
 
 
 class ProviderRegistry:
@@ -50,7 +53,7 @@ class ProviderRegistry:
             if ptype not in _PROVIDER_CLASSES:
                 print(f"Warning: unknown auth provider type '{ptype}', skipping")
                 continue
-            if ptype == "dev_stub" and settings.APP_ENV not in _DEV_STUB_ALLOWED_ENVS:
+            if ptype == "dev_stub" and settings.APP_ENV not in DEV_STUB_ALLOWED_ENVS:
                 print(
                     "Warning: dev_stub auth provider is disabled outside "
                     "local/dev/test environments"
