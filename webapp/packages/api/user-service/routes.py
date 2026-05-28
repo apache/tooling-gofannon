@@ -63,6 +63,7 @@ from services.mcp_client_service import McpClientService, get_mcp_client_service
 from services.observability_service import (
     ObservabilityService,
     get_observability_service,
+    get_request_user_id,
     get_sanitized_request_data,
 )
 from services.user_service import UserService
@@ -145,6 +146,16 @@ async def get_current_user(request: Request, token: str = Depends(oauth2_scheme)
 
     Attaches the user object to request.state for observability.
     """
+    # Short-circuit: ObservabilityMiddleware (PR #35 / ISSUE-014) resolves
+    # the session cookie before any route runs so request logs can include
+    # the authenticated user_id even on public endpoints. When that happened
+    # this request, the session lookup has already been performed and the
+    # user dict is exactly what _verify_session_cookie would return. Reuse
+    # it instead of redoing the same DB roundtrip.
+    existing = getattr(request.state, "user", None)
+    if isinstance(existing, dict) and existing.get("auth_mode") == "session":
+        return existing
+
     # 1) Session cookie
     sid = request.cookies.get("gofannon_sid")
     if sid:
@@ -227,7 +238,7 @@ async def log_client_event(
     logger: ObservabilityService = Depends(get_logger)
 ):
     """Receives and logs an event from the frontend client."""
-    user_id = getattr(request.state, 'user', {}).get('uid', 'anonymous')
+    user_id = get_request_user_id(request)
 
     metadata = payload.metadata or {}
     metadata['client_host'] = request.client.host if request.client else "unknown"

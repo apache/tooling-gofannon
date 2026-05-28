@@ -239,6 +239,8 @@ class ObservabilityService:
 
 # --- Singleton Factory ---
 _observability_instance = None
+ANONYMOUS_USER_ID = "anonymous"
+
 
 def get_observability_service() -> ObservabilityService:
     global _observability_instance
@@ -246,7 +248,57 @@ def get_observability_service() -> ObservabilityService:
         _observability_instance = ObservabilityService()
     return _observability_instance
 
+
+def get_request_user_id(request: Request) -> str:
+    user = getattr(request.state, 'user', None)
+    if isinstance(user, dict):
+        return user.get('uid') or ANONYMOUS_USER_ID
+    return ANONYMOUS_USER_ID
+
+
+def _session_to_user(session) -> Dict[str, Any]:
+    return {
+        "uid": session.user_uid,
+        "email": session.email,
+        "name": session.display_name,
+        "displayName": session.display_name,
+        "provider_type": session.provider_type,
+        "workspaces": [w.model_dump(by_alias=True) for w in session.workspaces],
+        "is_site_admin": session.is_site_admin,
+        "auth_mode": "session",
+    }
+
+
 class ObservabilityMiddleware(BaseHTTPMiddleware):
+    async def _populate_session_user(self, request: Request):
+        if getattr(request.state, 'user', None):
+            return
+
+        sid = request.cookies.get("gofannon_sid")
+        if not sid:
+            return
+
+        try:
+            from services.database_service import get_database_service
+            from services.session_service import get_session_service
+
+            db = get_database_service(settings)
+            session = await get_session_service(db).get_by_id(sid)
+        except Exception as exc:
+            # Observability middleware must NEVER fail a request. A broken
+            # session service or DB outage downgrades us to "anonymous"
+            # logs, which is the right tradeoff -- but leave a debug-level
+            # breadcrumb so it isn't completely silent if something starts
+            # going wrong.
+            import logging
+            logging.getLogger(__name__).debug(
+                "Session lookup failed in ObservabilityMiddleware: %r", exc,
+            )
+            return
+
+        if session:
+            request.state.user = _session_to_user(session)
+
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         observability_service = get_observability_service()
         start_time = time.time()
@@ -259,10 +311,11 @@ class ObservabilityMiddleware(BaseHTTPMiddleware):
         }
 
         try:
+            await self._populate_session_user(request)
             response = await call_next(request)
             process_time = time.time() - start_time
             
-            user_id = getattr(request.state, 'user', {}).get('uid')
+            user_id = get_request_user_id(request)
 
             observability_service.log(
                 event_type="api_request_start",
@@ -286,7 +339,7 @@ class ObservabilityMiddleware(BaseHTTPMiddleware):
             
         except Exception as e:
             process_time = time.time() - start_time
-            user_id = getattr(request.state, 'user', {}).get('uid')
+            user_id = get_request_user_id(request)
 
             observability_service.log(
                 event_type="api_request_start",
@@ -313,6 +366,7 @@ class ObservabilityMiddleware(BaseHTTPMiddleware):
                 status_code=500,
                 content={"detail": "An internal server error occurred."}
             )
+
 
 def get_sanitized_request_data(request: Optional[Request]) -> Dict[str, Any]:
     """Extracts serializable data from a Starlette/FastAPI Request object."""

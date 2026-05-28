@@ -200,6 +200,11 @@ def test_log_client_enriches_metadata_with_dependency_overrides():
     app.dependency_overrides[get_db] = lambda: fake_db
     app.dependency_overrides[get_current_user] = override_current_user
 
+    @app.middleware("http")
+    async def inject_user(request: Request, call_next):
+        request.state.user = {"uid": "user-123"}
+        return await call_next(request)
+
     client = TestClient(app)
     try:
         response = client.post(
@@ -219,6 +224,7 @@ def test_log_client_enriches_metadata_with_dependency_overrides():
         assert metadata["extra"] == "value"
         assert metadata["client_host"] == "testclient"
         assert metadata["user_agent"] == "TestAgent/1.0"
+        assert fake_logger.log.call_args.kwargs["user_id"] == "user-123"
     finally:
         app.dependency_overrides = {}
 
@@ -333,3 +339,51 @@ def test_dev_stub_picker_returns_404_outside_dev_env(monkeypatch):
     )
 
     assert response.status_code == 404
+
+
+def test_get_current_user_short_circuits_on_middleware_populated_user(monkeypatch):
+    """When the ObservabilityMiddleware (PR-35) has already resolved the
+    session cookie into ``request.state.user``, ``get_current_user`` reuses
+    that dict instead of re-running the session lookup. Guards against a
+    double DB roundtrip on every authenticated request."""
+    import routes as routes_module
+
+    verify_call_count = {"n": 0}
+
+    async def counting_verify(request, sid):
+        verify_call_count["n"] += 1
+        # Return the same shape _verify_session_cookie would.
+        user = {
+            "uid": "session-user",
+            "email": "session@example.com",
+            "auth_mode": "session",
+        }
+        request.state.user = user
+        return user
+
+    monkeypatch.setattr(routes_module, "_verify_session_cookie", counting_verify)
+
+    app = create_app()
+
+    @app.middleware("http")
+    async def fake_obs_middleware(request: Request, call_next):
+        # Simulate what ObservabilityMiddleware does in PR-35: pre-populate
+        # request.state.user from a session lookup, before routes run.
+        request.state.user = {
+            "uid": "session-user",
+            "email": "session@example.com",
+            "auth_mode": "session",
+        }
+        return await call_next(request)
+
+    client = TestClient(app)
+    response = client.get("/users/me", cookies={"gofannon_sid": "doesnt-matter"})
+
+    # The endpoint protected by get_current_user should respond successfully
+    # and _verify_session_cookie must NOT have been called -- the
+    # short-circuit handed back the middleware-populated user.
+    assert response.status_code in (200, 404)  # 404 if user-service mock missing; either way auth was bypassed
+    assert verify_call_count["n"] == 0, (
+        "get_current_user should have reused the middleware-populated user "
+        "instead of re-verifying the session cookie"
+    )
