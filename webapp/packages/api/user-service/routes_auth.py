@@ -18,7 +18,7 @@ from typing import Optional
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
-from auth import get_registry
+from auth import DEV_STUB_ALLOWED_ENVS, get_registry
 from auth.base import LoginAllow, LoginDeny
 from config import settings
 from dependencies import get_db
@@ -280,6 +280,9 @@ async def dev_stub_picker(
     Clicking one does a GET to /auth/callback/dev_stub?code=<uid>&state=<state>,
     which completes the login. No OAuth involved.
     """
+    if settings.APP_ENV not in DEV_STUB_ALLOWED_ENVS:
+        raise HTTPException(status_code=404)
+
     user_list = [u for u in users.split(",") if u]
     if not user_list:
         return HTMLResponse(
