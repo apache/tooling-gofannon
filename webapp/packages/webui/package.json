@@ -18,7 +18,7 @@
     "@mui/icons-material": "^7.3.3",
     "@mui/material": "^7.3.3",
     "@gofannon/config": "workspace:*",
-    "axios": "1.15.2",
+    "axios": "1.16.0",
     "prop-types": "^15.8.1",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
