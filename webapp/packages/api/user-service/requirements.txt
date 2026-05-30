@@ -1,4 +1,5 @@
 fastapi[all]
+starlette>=1.0.1
 uvicorn[standard]
 boto3  # For S3/MinIO
 python-dotenv
