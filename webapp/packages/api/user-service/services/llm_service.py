@@ -56,6 +56,16 @@ def _extract_response_cost(response_obj: Any) -> Optional[float]:
             return None
     return None
 
+def _is_opus_4_7_or_later(model: str) -> bool:
+    """Opus 4.7+ uses adaptive thinking with output_config.effort
+    instead of the old reasoning_effort -> thinking.type.enabled
+    translation that litellm does for Opus 4.6 and earlier."""
+    if "claude-opus" not in model:
+        return False
+    if "claude-opus-4-6" in model:
+        return False
+    return any(tag in model for tag in ("claude-opus-4-7", "claude-opus-4-8"))
+
 
 async def call_llm(
     provider: str,
@@ -305,7 +315,15 @@ async def call_llm(
     else:
         # Standard acompletion call for most models
         if reasoning_effort != 'disable':
-            kwargs['reasoning_effort'] = reasoning_effort
+            if _is_opus_4_7_or_later(model):
+                # Opus 4.7+ rejects the old thinking.type.enabled format
+                # that litellm's reasoning_effort translation produces.
+                # Set the adaptive-thinking params directly and skip
+                # litellm's translation.
+                kwargs['thinking'] = {'type': 'adaptive'}
+                kwargs['output_config'] = {'effort': reasoning_effort}
+            else:
+                kwargs['reasoning_effort'] = reasoning_effort
 
         # Retry loop. Two exception classes are retryable here:
         #   - litellm.Timeout       — slow network or model; modest linear backoff.

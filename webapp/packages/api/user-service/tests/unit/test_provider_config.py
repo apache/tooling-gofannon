@@ -82,6 +82,41 @@ class TestBedrockModels:
         assert params["reasoning_effort"]["choices"] == ["disable", "low", "medium", "high"]
 
     @pytest.mark.parametrize("model_id", [
+        "us.anthropic.claude-opus-4-7",
+        "us.anthropic.claude-opus-4-8",
+    ])
+    def test_opus_4_7_plus_models_registered(self, bedrock_models, model_id):
+        """Opus 4.7+ models are present with the metadata flags the LLM
+        service layer needs to route through the new adaptive thinking
+        parameter format."""
+        assert model_id in bedrock_models
+        entry = bedrock_models[model_id]
+        assert entry["supports_thinking"] is True
+        assert entry["supports_effort"] is True
+        assert entry["returns_thoughts"] is True
+        assert entry["context_window"] >= 200000
+
+    @pytest.mark.parametrize("model_id", [
+        "us.anthropic.claude-opus-4-7",
+        "us.anthropic.claude-opus-4-8",
+    ])
+    def test_opus_4_7_plus_models_expose_extended_effort_levels(self, bedrock_models, model_id):
+        """Opus 4.7 introduced two new effort levels (xhigh, max) on top of
+        the legacy low/medium/high. The config must surface them so the UI
+        picker exposes them; absence means the model can't be invoked at
+        its higher reasoning tiers from the SPA."""
+        params = bedrock_models[model_id]["parameters"]
+        assert "reasoning_effort" in params
+        choices = params["reasoning_effort"]["choices"]
+        # New tiers are present
+        assert "xhigh" in choices, f"{model_id} missing xhigh effort"
+        assert "max" in choices, f"{model_id} missing max effort"
+        # Legacy tiers still available so existing prompts that say
+        # reasoning_effort="high" don't break.
+        for legacy in ("disable", "low", "medium", "high"):
+            assert legacy in choices, f"{model_id} dropped legacy {legacy!r}"
+
+    @pytest.mark.parametrize("model_id", [
         # Claude 3.5 and 3 don't support extended thinking
         "us.anthropic.claude-3-5-haiku-20241022-v1:0",
         "anthropic.claude-3-haiku-20240307-v1:0",

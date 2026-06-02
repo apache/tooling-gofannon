@@ -534,3 +534,148 @@ class TestBedrockProvider:
 
         assert call_kwargs["temperature"] == 0.7
         assert call_kwargs["max_tokens"] == 1000
+
+class TestIsOpus47OrLater:
+    """Tests for the _is_opus_4_7_or_later helper."""
+
+    @pytest.mark.parametrize("model", [
+        "us.anthropic.claude-opus-4-7",
+        "us.anthropic.claude-opus-4-8",
+        # Tolerate either bare or prefixed model strings.
+        "bedrock/us.anthropic.claude-opus-4-7",
+        "bedrock/us.anthropic.claude-opus-4-8",
+    ])
+    def test_returns_true_for_opus_4_7_and_4_8(self, model):
+        assert llm_service._is_opus_4_7_or_later(model) is True
+
+    @pytest.mark.parametrize("model", [
+        # Older Opus generations use the legacy thinking format.
+        "us.anthropic.claude-opus-4-6-v1",
+        "us.anthropic.claude-opus-4-5-20251101-v1:0",
+        "us.anthropic.claude-opus-4-1-20250805-v1:0",
+        # Non-Opus Claude models never go through the new format,
+        # regardless of generation.
+        "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+        "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+        # Completely unrelated providers / models.
+        "gpt-5",
+        "",
+    ])
+    def test_returns_false_for_older_opus_and_non_opus(self, model):
+        assert llm_service._is_opus_4_7_or_later(model) is False
+
+
+class TestCallLlmAdaptiveThinkingKwargs:
+    """Verify the kwargs that reach litellm.acompletion when reasoning_effort
+    is set on Opus 4.7+ vs. older models. Locks in the parameter-shape
+    contract that Bedrock's converse API enforces."""
+
+    @pytest.fixture
+    def captured(self):
+        """Holds the kwargs the fake acompletion saw, for assertion."""
+        return {}
+
+    @pytest.fixture
+    def patched_llm(self, monkeypatch, captured):
+        async def capturing_acompletion(**kwargs):
+            captured.update(kwargs)
+            return _DummyResponse("ok", total_cost=0.0)
+        monkeypatch.setattr(llm_service.litellm, "acompletion", capturing_acompletion)
+        monkeypatch.setattr(llm_service, "get_observability_service", lambda: Mock())
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("model,effort", [
+        ("us.anthropic.claude-opus-4-7", "low"),
+        ("us.anthropic.claude-opus-4-7", "medium"),
+        ("us.anthropic.claude-opus-4-7", "high"),
+        ("us.anthropic.claude-opus-4-7", "xhigh"),
+        ("us.anthropic.claude-opus-4-7", "max"),
+        ("us.anthropic.claude-opus-4-8", "high"),
+    ])
+    async def test_opus_4_7_plus_with_effort_uses_adaptive_thinking(
+        self, patched_llm, captured, model, effort,
+    ):
+        """For Opus 4.7+, reasoning_effort must be translated into
+        thinking={"type":"adaptive"} and output_config={"effort":...}
+        before litellm sees the call. The legacy `reasoning_effort`
+        kwarg must NOT be passed through, otherwise litellm's internal
+        translation re-injects the rejected thinking.type.enabled shape."""
+        await llm_service.call_llm(
+            provider="bedrock",
+            model=model,
+            messages=[{"role": "user", "content": "hi"}],
+            parameters={"reasoning_effort": effort},
+            user_service=Mock(),
+            user_id="user-1",
+        )
+        assert captured.get("thinking") == {"type": "adaptive"}
+        assert captured.get("output_config") == {"effort": effort}
+        assert "reasoning_effort" not in captured, (
+            "reasoning_effort must be stripped on 4.7+; if it leaks "
+            "through, litellm re-translates it to thinking.type.enabled "
+            "and Bedrock 400s."
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("model", [
+        "us.anthropic.claude-opus-4-6-v1",
+        "us.anthropic.claude-opus-4-5-20251101-v1:0",
+        "us.anthropic.claude-opus-4-1-20250805-v1:0",
+        "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+        "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+    ])
+    async def test_older_models_pass_reasoning_effort_through(
+        self, patched_llm, captured, model,
+    ):
+        """4.6 and earlier (and all non-Opus Claudes) keep the legacy
+        path: reasoning_effort passes through to litellm unchanged, and
+        no adaptive-thinking params are set."""
+        await llm_service.call_llm(
+            provider="bedrock",
+            model=model,
+            messages=[{"role": "user", "content": "hi"}],
+            parameters={"reasoning_effort": "high"},
+            user_service=Mock(),
+            user_id="user-1",
+        )
+        assert captured.get("reasoning_effort") == "high"
+        assert "thinking" not in captured
+        assert "output_config" not in captured
+
+    @pytest.mark.asyncio
+    async def test_opus_4_8_with_disable_sets_no_thinking_params(
+        self, patched_llm, captured,
+    ):
+        """reasoning_effort='disable' must skip BOTH branches — no
+        thinking dict, no output_config, no reasoning_effort kwarg.
+        Otherwise the model thinks when the caller asked it not to."""
+        await llm_service.call_llm(
+            provider="bedrock",
+            model="us.anthropic.claude-opus-4-8",
+            messages=[{"role": "user", "content": "hi"}],
+            parameters={"reasoning_effort": "disable"},
+            user_service=Mock(),
+            user_id="user-1",
+        )
+        assert "thinking" not in captured
+        assert "output_config" not in captured
+        assert "reasoning_effort" not in captured
+
+    @pytest.mark.asyncio
+    async def test_opus_4_8_without_reasoning_effort_parameter(
+        self, patched_llm, captured,
+    ):
+        """When reasoning_effort isn't supplied at all (no key in the
+        parameters dict), behavior should match 'disable' — no thinking
+        params injected."""
+        await llm_service.call_llm(
+            provider="bedrock",
+            model="us.anthropic.claude-opus-4-8",
+            messages=[{"role": "user", "content": "hi"}],
+            parameters={},
+            user_service=Mock(),
+            user_id="user-1",
+        )
+        assert "thinking" not in captured
+        assert "output_config" not in captured
+        assert "reasoning_effort" not in captured

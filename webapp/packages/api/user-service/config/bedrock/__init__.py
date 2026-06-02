@@ -8,6 +8,91 @@
 
 models = {
     # =========================================================================
+    # Anthropic Claude Opus 4.8 (Bedrock)
+    # Uses the new adaptive thinking format introduced with Opus 4.7:
+    #   thinking={"type":"adaptive"}, output_config={"effort":"high"}
+    # NOT the legacy thinking={"type":"enabled","budget_tokens":N} format.
+    # llm_service.py must branch on the model string to send the right shape.
+    # =========================================================================
+    "us.anthropic.claude-opus-4-8": {
+        "returns_thoughts": True,
+        "supports_effort": True,
+        "supports_thinking": True,
+        "context_window": 200000,
+        "parameters": {
+            "temperature": {
+                "type": "float",
+                "default": 1.0,
+                "min": 0.0,
+                "max": 1.0,
+                "description": "Randomness (0=focused, 1=creative). Locked to 1.0 when thinking enabled.",
+                "mutually_exclusive_with": ["top_p"]
+            },
+            "top_p": {
+                "type": "float",
+                "default": 0.9,
+                "min": 0.0,
+                "max": 1.0,
+                "description": "Nucleus sampling (0.1=conservative, 0.95=diverse)",
+                "mutually_exclusive_with": ["temperature"]
+            },
+            "reasoning_effort": {
+                "type": "choice",
+                "default": "disable",
+                "choices": ["disable", "low", "medium", "high", "xhigh", "max"],
+                "description": "Reasoning Effort: Enables extended thinking. xhigh/max are Opus 4.7+ only."
+            },
+            "max_tokens": {
+                "type": "integer",
+                "default": 16384,
+                "min": 1,
+                "max": 128000,
+                "description": "Maximum tokens in response"
+            },
+        }
+    },
+    # =========================================================================
+    # Anthropic Claude Opus 4.7 (Bedrock)
+    # Same adaptive thinking format as 4.8 — see comment block above.
+    # =========================================================================
+    "us.anthropic.claude-opus-4-7": {
+        "returns_thoughts": True,
+        "supports_effort": True,
+        "supports_thinking": True,
+        "context_window": 200000,
+        "parameters": {
+            "temperature": {
+                "type": "float",
+                "default": 1.0,
+                "min": 0.0,
+                "max": 1.0,
+                "description": "Randomness (0=focused, 1=creative). Locked to 1.0 when thinking enabled.",
+                "mutually_exclusive_with": ["top_p"]
+            },
+            "top_p": {
+                "type": "float",
+                "default": 0.9,
+                "min": 0.0,
+                "max": 1.0,
+                "description": "Nucleus sampling (0.1=conservative, 0.95=diverse)",
+                "mutually_exclusive_with": ["temperature"]
+            },
+            "reasoning_effort": {
+                "type": "choice",
+                "default": "disable",
+                "choices": ["disable", "low", "medium", "high", "xhigh", "max"],
+                "description": "Reasoning Effort: Enables extended thinking. xhigh/max are Opus 4.7+ only."
+            },
+            "max_tokens": {
+                "type": "integer",
+                "default": 16384,
+                "min": 1,
+                "max": 128000,
+                "description": "Maximum tokens in response"
+            },
+        }
+    },
+    # =========================================================================
     # Anthropic Claude Opus 4.6 (Bedrock)
     # =========================================================================
     "us.anthropic.claude-opus-4-6-v1": {
