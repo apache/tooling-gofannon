@@ -9,16 +9,16 @@
 models = {
     # =========================================================================
     # Anthropic Claude Opus 4.8 (Bedrock)
-    # Uses the new adaptive thinking format introduced with Opus 4.7:
+    # 1M token context, 128K max output. Adaptive thinking format:
     #   thinking={"type":"adaptive"}, output_config={"effort":"high"}
-    # NOT the legacy thinking={"type":"enabled","budget_tokens":N} format.
-    # llm_service.py must branch on the model string to send the right shape.
+    # NOT the legacy thinking={"type":"enabled","budget_tokens":N} shape.
+    # llm_service.py branches on the model string to send the right format.
     # =========================================================================
     "us.anthropic.claude-opus-4-8": {
         "returns_thoughts": True,
         "supports_effort": True,
         "supports_thinking": True,
-        "context_window": 200000,
+        "context_window": 1000000,
         "parameters": {
             "temperature": {
                 "type": "float",
@@ -53,13 +53,13 @@ models = {
     },
     # =========================================================================
     # Anthropic Claude Opus 4.7 (Bedrock)
-    # Same adaptive thinking format as 4.8 — see comment block above.
+    # Same 1M context / 128K output / adaptive thinking as 4.8.
     # =========================================================================
     "us.anthropic.claude-opus-4-7": {
         "returns_thoughts": True,
         "supports_effort": True,
         "supports_thinking": True,
-        "context_window": 200000,
+        "context_window": 1000000,
         "parameters": {
             "temperature": {
                 "type": "float",
