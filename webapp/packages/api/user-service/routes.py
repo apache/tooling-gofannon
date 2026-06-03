@@ -1008,6 +1008,47 @@ async def stream_run(run_id: str, user: dict = Depends(get_current_user)):
     )
 
 
+# --- ISSUE-007: cooperative cancellation ---
+
+
+@router.post("/runs/{run_id}/stop", status_code=202)
+async def stop_run(
+    run_id: str,
+    user: dict = Depends(get_current_user),
+):
+    """Request cooperative stop of an in-flight run.
+
+    Sets the run's ``CancelToken``. The next structural boundary
+    inside the agent (LLM call, data-store op, gofannon-client call,
+    tool entry) raises ``AgentStopped`` and the run terminates with
+    status ``stopped``. In-flight LLM requests finish naturally;
+    cleanup handlers (``finally:`` blocks, ``httpx`` client closes)
+    run before exit. See ISSUE-007 for the cancellation model.
+
+    Authorization: only the run's owner may stop it. After ISSUE-002
+    lands, widen to workspace membership.
+    """
+    from services.run_cancel_registry import get as get_token
+    # When ISSUE-003 is present we also check ownership against
+    # RunRegistry; absent that, the cancel registry alone is the source
+    # of truth (an unknown run_id 404s either way).
+    token = get_token(run_id)
+    if token is None:
+        raise HTTPException(status_code=404, detail="Run not found or already complete")
+
+    try:
+        from services.run_registry import get_run_registry
+        record = get_run_registry().get(run_id)
+        if record is not None and record.user_id != user.get("uid"):
+            raise HTTPException(status_code=404, detail="Run not found")
+    except ImportError:
+        # ISSUE-003 not yet applied; rely on cancel registry alone.
+        pass
+
+    token.request_stop()
+    return {"runId": run_id, "status": "stopping"}
+
+
 @router.post("/agents/run-code", response_model=RunCodeResponse)
 async def run_agent_code(
     request: RunCodeRequest,

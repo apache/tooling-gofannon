@@ -12,6 +12,7 @@ import litellm
 from services.litellm_logger import ensure_litellm_logging
 from services.observability_service import get_observability_service
 from services.user_service import UserService
+from services.cancel_token import check_should_stop  # ISSUE-007
 
 ensure_litellm_logging()
 
@@ -85,6 +86,7 @@ async def call_llm(
     Args:
         timeout: Per-call timeout in seconds. Defaults to LLM_TIMEOUT_SECONDS env var (600).
     """
+    check_should_stop()  # ISSUE-007: cancel at structural boundary
     model_config = PROVIDER_CONFIG.get(provider, {}).get("models", {}).get(model, {})
     api_style = model_config.get("api_style")
 

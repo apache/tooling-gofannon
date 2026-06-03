@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from fastapi import HTTPException
 
 from services.database_service import DatabaseService
+from services.cancel_token import check_should_stop  # ISSUE-007
 from services.access_tracking import AccessAccumulator
 from time_utils import naive_utc_now
 
@@ -96,6 +97,7 @@ class DataStoreService:
         key: str,
         agent_name: Optional[str] = None
     ) -> Optional[Dict[str, Any]]:
+        check_should_stop()  # ISSUE-007
         """Get a value from the data store."""
         doc_id = self._make_doc_id(user_id, namespace, key)
 
@@ -123,6 +125,7 @@ class DataStoreService:
         agent_name: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
+        check_should_stop()  # ISSUE-007
         """Set a value in the data store.
 
         Optimistic-write: tries save() with no pre-read.  If the doc
@@ -187,6 +190,7 @@ class DataStoreService:
         return record_data
 
     def delete(self, user_id: str, namespace: str, key: str) -> bool:
+        check_should_stop()  # ISSUE-007
         """Delete a value from the data store."""
         doc_id = self._make_doc_id(user_id, namespace, key)
 
@@ -277,6 +281,7 @@ class DataStoreService:
         keys: List[str],
         agent_name: Optional[str] = None
     ) -> Dict[str, Any]:
+        check_should_stop()  # ISSUE-007
         """Get multiple values at once.
 
         Uses the backend's bulk-fetch primitive (CouchDB
@@ -315,6 +320,7 @@ class DataStoreService:
         items: List[Tuple[str, str, Any, Optional[Dict[str, Any]]]],
         agent_name: Optional[str] = None
     ) -> int:
+        check_should_stop()  # ISSUE-007
         """Set multiple values at once via the backend's bulk primitive.
 
         One get_many() to fetch existing docs (so we get _revs and
