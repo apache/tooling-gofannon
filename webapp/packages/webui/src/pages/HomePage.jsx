@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import RunningJobsModule from '../components/RunningJobsModule';  // ISSUE-006
 import { useNavigate } from 'react-router-dom';
 import {
   Box,
@@ -117,6 +118,8 @@ const HomePage = () => {
 
   return (
     <Box sx={{ p: 3, maxWidth: 1800, margin: '0 auto' }}>
+      {/* ISSUE-006: cross-agent runs overview */}
+      <RunningJobsModule />
       <Box sx={{ 
         display: 'grid', 
         gridTemplateColumns: { xs: '1fr', lg: '1fr 1fr', xl: '1fr 1fr 1fr' }, 
