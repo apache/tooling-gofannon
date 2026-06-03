@@ -52,6 +52,19 @@ class GenerateCodeResponse(BaseModel):
 
     model_config = ConfigDict(populate_by_name=True)
 
+class AgentEnvVar(BaseModel):
+    """Per-agent environment variable. Plaintext — not for secrets.
+
+    Values are stored on the agent document and visible in trace events.
+    Use the user-profile API Keys feature for secret values.
+    """
+    key: str
+    value: str
+    description: Optional[str] = None
+
+    model_config = ConfigDict(populate_by_name=True, alias_generator=to_camel)
+
+
 class CreateAgentRequest(BaseModel):
     name: str
     description: str
@@ -69,6 +82,8 @@ class CreateAgentRequest(BaseModel):
     data_store_config: Optional[List[DataStoreNamespaceConfig]] = Field(
         default_factory=list, alias="dataStoreConfig"
     )
+    # ISSUE-008: per-agent env vars surfaced through _EnvironProxy at runtime.
+    env_vars: List[AgentEnvVar] = Field(default_factory=list, alias="envVars")
 
     model_config = ConfigDict(
         populate_by_name=True,   
@@ -94,6 +109,8 @@ class UpdateAgentRequest(BaseModel):
     data_store_config: Optional[List[DataStoreNamespaceConfig]] = Field(
         default=None, alias="dataStoreConfig"
     )
+    # ISSUE-008: per-agent env vars (None = leave existing untouched on PUT)
+    env_vars: Optional[List[AgentEnvVar]] = Field(default=None, alias="envVars")
     model_config = ConfigDict(
         populate_by_name=True,
         alias_generator=to_camel,

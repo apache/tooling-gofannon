@@ -15,7 +15,7 @@ from fastapi.security import OAuth2PasswordBearer
 from agent_factory.remote_mcp_client import RemoteMCPClient
 from config import settings
 from config.provider_config import PROVIDER_CONFIG as APP_PROVIDER_CONFIG
-from models.agent import Agent, LlmSettings
+from models.agent import Agent, LlmSettings, AgentEnvVar
 from models.chat import ChatRequest
 from services.database_service import DatabaseService, get_database_service
 from services.llm_service import call_llm
@@ -144,6 +144,7 @@ async def _execute_agent_code(
     llm_settings: Optional[LlmSettings] = None,
     agent_name: Optional[str] = None,
     trace: Optional[Trace] = None,
+    env_vars: Optional[List["AgentEnvVar"]] = None,
 ):
     """Helper function for recursive execution of agent code.
 
@@ -193,6 +194,7 @@ async def _execute_agent_code(
                 llm_settings=self.llm_settings,
                 agent_name=agent_to_run.name,
                 trace=active_trace,
+                env_vars=getattr(agent_to_run, "env_vars", []),
             )
 
             return result
@@ -386,6 +388,11 @@ async def _execute_agent_code(
     if not run_function or not asyncio.iscoroutinefunction(run_function):
         raise ValueError("Code did not define an 'async def run(input_dict, tools)' function.")
 
+    # ISSUE-008: build env overlay from per-agent env_vars and bind via
+    # contextvar. Concurrent agent runs see different overlays without locking.
+    from services.environ_proxy import env_overlay as _env_overlay
+    _overlay = {ev.key: ev.value for ev in (env_vars or [])}
+
     # Trace integration. When trace is provided, every event from this
     # invocation (and any nested gofannon-client calls) lands in it.
     # capture_user_io routes stdout/stderr/logging into the trace as
@@ -398,7 +405,7 @@ async def _execute_agent_code(
             agent_id=None,
             called_by=None,
         )
-        with bind_trace(trace), capture_user_io(trace):
+        with bind_trace(trace), capture_user_io(trace), _env_overlay(_overlay):
             try:
                 result = await run_function(input_dict=input_dict, tools=tools)
                 trace.agent_end(
@@ -415,7 +422,8 @@ async def _execute_agent_code(
                 )
                 raise
     else:
-        result = await run_function(input_dict=input_dict, tools=tools)
+        with _env_overlay(_overlay):
+            result = await run_function(input_dict=input_dict, tools=tools)
 
     # Return both the agent's return value and the accumulated ops log so
     # the sandbox UI can render the live timeline. Callers that don't want
@@ -491,6 +499,7 @@ async def process_chat(ticket_id: str, request: ChatRequest, user: dict, req: Re
                 user_id=user.get("uid"),
                 user_basic_info=user_basic_info,
                 llm_settings=llm_settings,
+                env_vars=getattr(agent, "env_vars", []),
             )
 
             if isinstance(result, dict):
@@ -974,6 +983,7 @@ async def run_deployed_agent(
             user_id=user_id,
             user_basic_info=user_basic_info,
             llm_settings=llm_settings,
+            env_vars=getattr(agent, "env_vars", []),
         )
         return result
     except HTTPException as e:

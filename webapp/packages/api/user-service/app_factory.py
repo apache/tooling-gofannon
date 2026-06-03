@@ -55,6 +55,11 @@ def _include_routers(app: FastAPI, router_configs: Iterable[RouterConfig]) -> No
 
 def create_app() -> FastAPI:
     """Create and configure a FastAPI application instance."""
+    # ISSUE-008: install per-agent env_var overlay proxy before anything reads
+    # os.environ. Idempotent.
+    from services.environ_proxy import install_environ_proxy
+    install_environ_proxy()
+
     app = FastAPI(lifespan=lifespan)
     app.add_middleware(ObservabilityMiddleware)
     _configure_cors(app)
