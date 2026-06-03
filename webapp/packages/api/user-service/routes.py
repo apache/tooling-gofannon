@@ -824,6 +824,190 @@ async def run_agent_code_stream(
     )
 
 
+# --- ISSUE-003: run registry endpoints ---
+# Background:
+#   /agents/run-code/stream above couples the agent's lifetime to a single
+#   SSE connection. Closing the tab kills nothing today (the connection
+#   close just unblocks the streamer's `finally`), but reconnecting is
+#   impossible — there's no run_id, the events list isn't addressable.
+#   These endpoints make runs first-class: each one has a UUID, a record
+#   in RunRegistry, and SSE that replays then goes live. See ISSUE-003 for
+#   the full design rationale and follow-ups (CouchDB persistence, stop
+#   button in ISSUE-007).
+
+
+@router.post("/agents/run-code/start", status_code=202)
+async def start_agent_run(
+    request: RunCodeRequest,
+    req: Request,
+    background_tasks: BackgroundTasks,
+    user: dict = Depends(get_current_user),
+    db: DatabaseService = Depends(get_db),
+    logger: ObservabilityService = Depends(get_logger),
+):
+    """Fire-and-forget agent run. Returns ``{run_id}`` immediately.
+
+    The agent executes in a background asyncio task registered with
+    RunRegistry. Clients subscribe via ``GET /runs/{run_id}/stream``
+    to receive trace events with replay-then-live semantics.
+    """
+    from services.run_registry import get_run_registry
+
+    registry = get_run_registry()
+    record = registry.new_record(
+        user_id=user.get("uid") or "anonymous",
+        agent_name=request.friendly_name or "sandbox_agent",
+    )
+
+    user_basic_info = {
+        "email": user.get("email"),
+        "name": user.get("name") or user.get("displayName"),
+    }
+
+    async def runner():
+        try:
+            result, ops_log = await _execute_agent_code(
+                code=request.code,
+                input_dict=request.input_dict,
+                tools=request.tools,
+                gofannon_agents=request.gofannon_agents,
+                db=db,
+                llm_settings=request.llm_settings,
+                user_id=user.get("uid"),
+                user_basic_info=user_basic_info,
+                agent_name=record.agent_name,
+                trace=record.trace,
+            )
+            warnings = validate_output_against_schema(result, request.output_schema)
+            registry.mark_complete(
+                record,
+                status="success",
+                result=result,
+                schema_warnings=warnings or None,
+                ops_log=ops_log or None,
+            )
+        except Exception as e:
+            logger.log(
+                "ERROR",
+                "run_failure",
+                f"Run {record.run_id} failed: {type(e).__name__}",
+                metadata={"traceback": traceback.format_exc()},
+            )
+            registry.mark_complete(
+                record,
+                status="error",
+                error=f"{type(e).__name__}: {e}",
+            )
+
+    task = asyncio.create_task(runner())
+    registry.bind_task(record, task)
+
+    return {"runId": record.run_id, "status": record.status}
+
+
+@router.get("/runs")
+async def list_runs(user: dict = Depends(get_current_user)):
+    """List the current user's recent runs (in-memory; up to 100)."""
+    from services.run_registry import get_run_registry
+    registry = get_run_registry()
+    records = registry.list_for_user(user.get("uid") or "")
+    return {"runs": [r.to_summary() for r in records]}
+
+
+@router.get("/runs/{run_id}")
+async def get_run(run_id: str, user: dict = Depends(get_current_user)):
+    """Fetch a run's full state. Returns 404 if not found or not owned."""
+    from services.run_registry import get_run_registry
+    registry = get_run_registry()
+    record = registry.get(run_id)
+    if record is None or record.user_id != user.get("uid"):
+        # 404 not 403 — don't leak existence to non-owners.
+        raise HTTPException(status_code=404, detail="Run not found")
+    return record.to_full()
+
+
+@router.get("/runs/{run_id}/stream")
+async def stream_run(run_id: str, user: dict = Depends(get_current_user)):
+    """Subscribe to a run's trace events via SSE. Replay-then-live.
+
+    Sends every event already in ``record.trace.events`` first, then
+    transitions to live events from a per-subscriber queue. Emits a
+    final ``done`` frame when the run completes. Disconnecting does
+    NOT terminate the underlying run.
+    """
+    from services.run_registry import get_run_registry, DONE_SENTINEL
+    registry = get_run_registry()
+    record = registry.get(run_id)
+    if record is None or record.user_id != user.get("uid"):
+        raise HTTPException(status_code=404, detail="Run not found")
+
+    queue: asyncio.Queue = asyncio.Queue()
+    record.trace.add_subscriber(queue)
+
+    async def event_generator():
+        # 1. Emit the run_id as the first frame so clients can correlate.
+        yield f"event: run_id\ndata: {json.dumps({'runId': run_id})}\n\n"
+
+        # 2. Replay phase — snapshot the events list to avoid races with
+        #    appends from the running task. Each replayed event is sent
+        #    before we begin consuming the queue.
+        replay = list(record.trace.events)
+        for ev in replay:
+            yield f"event: trace\ndata: {json.dumps(ev, default=str)}\n\n"
+
+        # 3. If the run already finished, drain any "missed" tail from
+        #    the queue (the fanout might have placed events while we
+        #    were replaying), then emit done and exit.
+        if record.status != "running":
+            # Send any queued items that arrived during replay.
+            while not queue.empty():
+                item = queue.get_nowait()
+                if item is DONE_SENTINEL:
+                    break
+                yield f"event: trace\ndata: {json.dumps(item, default=str)}\n\n"
+            done_payload = json.dumps({
+                "outcome": record.status,
+                "result": record.result,
+                "error": record.error,
+                "schemaWarnings": record.schema_warnings,
+                "opsLog": record.ops_log,
+            })
+            yield f"event: done\ndata: {done_payload}\n\n"
+            return
+
+        # 4. Live phase — pull from the queue until DONE_SENTINEL.
+        try:
+            while True:
+                try:
+                    item = await asyncio.wait_for(queue.get(), timeout=30.0)
+                except asyncio.TimeoutError:
+                    yield ": heartbeat\n\n"
+                    continue
+                if item is DONE_SENTINEL:
+                    done_payload = json.dumps({
+                        "outcome": record.status,
+                        "result": record.result,
+                        "error": record.error,
+                        "schemaWarnings": record.schema_warnings,
+                        "opsLog": record.ops_log,
+                    })
+                    yield f"event: done\ndata: {done_payload}\n\n"
+                    return
+                yield f"event: trace\ndata: {json.dumps(item, default=str)}\n\n"
+        finally:
+            record.trace.remove_subscriber(queue)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
+
+
 @router.post("/agents/run-code", response_model=RunCodeResponse)
 async def run_agent_code(
     request: RunCodeRequest,
