@@ -26,7 +26,6 @@ const STATUS_CHIP = {
 export default function RunningJobsModule() {
   const [runs, setRuns] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -34,10 +33,17 @@ export default function RunningJobsModule() {
       try {
         const data = await listRuns();
         if (cancelled) return;
-        setRuns(data.runs || []);
-        setError(null);
+        // Defensive: data may be null/undefined if the endpoint returned
+        // something we couldn't parse (e.g. vite SPA fallback returning
+        // index.html when the api is briefly unreachable). Treat as empty
+        // rather than surfacing a parse error -- this widget is
+        // at-a-glance and empty is the right signal when nothing's there.
+        setRuns((data && data.runs) || []);
       } catch (e) {
-        if (!cancelled) setError(e.message || String(e));
+        if (!cancelled) {
+          console.warn('RunningJobsModule: unable to fetch /runs:', e.message || e);
+          setRuns([]);
+        }
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -60,13 +66,7 @@ export default function RunningJobsModule() {
         {loading && <CircularProgress size={16} />}
       </Box>
 
-      {error && (
-        <Typography variant="body2" color="error" sx={{ mb: 1 }}>
-          {error}
-        </Typography>
-      )}
-
-      {!loading && running.length === 0 && recent.length === 0 && (
+{!loading && running.length === 0 && recent.length === 0 && (
         <Typography variant="body2" color="text.secondary">
           No runs yet. Kick off an agent to see live status here.
         </Typography>

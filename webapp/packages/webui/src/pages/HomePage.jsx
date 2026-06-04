@@ -145,8 +145,6 @@ const HomePage = () => {
 
   return (
     <Box sx={{ p: 3, maxWidth: 1800, margin: '0 auto' }}>
-      {/* ISSUE-006: cross-agent runs overview */}
-      <RunningJobsModule />
       {(agentsError || demosError || dataStoresError) && (
         <Box sx={{ mb: 2, p: 2, bgcolor: 'warning.light', borderRadius: 1, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <Box>
@@ -169,6 +167,9 @@ const HomePage = () => {
         alignItems: 'start'
       }}>
         
+        {/* Column 1: Agents on top, Demo Apps stacked underneath */}
+        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+
         {/* Agents Table */}
         <Paper sx={{ overflow: 'hidden' }}>
           <Box sx={{ 
@@ -414,7 +415,13 @@ const HomePage = () => {
           </TableContainer>
         </Paper>
 
-        {/* Data Stores Table */}
+        </Box>
+        {/* end column 1 stack */}
+
+        {/* Column 2: cross-agent runs overview (ISSUE-006) */}
+        <RunningJobsModule />
+
+        {/* Column 3: Data Stores Table */}
         <Paper sx={{ overflow: 'hidden' }}>
           <Box sx={{
             p: 2,
