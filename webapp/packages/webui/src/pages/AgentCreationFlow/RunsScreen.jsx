@@ -500,6 +500,91 @@ const RunsScreen = () => {
     });
   };
 
+  // Render the agent's output as one labeled panel per top-level key,
+  // mirroring how inputs are rendered above. Two driver heuristics:
+  //   1. If outputSchema is declared with multiple keys, iterate over
+  //      schema keys so the user sees a panel for every expected key
+  //      even if the agent omitted some (helps diagnose missing-key bugs).
+  //   2. Fall back to iterating over actual output keys so we still
+  //      render coherently when no schema is declared, or when the
+  //      output has extra keys the schema didn't expect.
+  // Either way, non-string values stringify as pretty JSON; strings
+  // render as-is so they're readable rather than quoted.
+  const renderOutput = (out, schema) => {
+    if (out === null || out === undefined) return null;
+    // Single-string-blob fallback: if output is not an object (a bare
+    // string or number got returned), render it as a single panel
+    // labeled "output" — the old behavior for non-dict returns.
+    if (typeof out !== 'object' || Array.isArray(out)) {
+      return (
+        <Paper variant="outlined" sx={{ p: 2, bgcolor: 'grey.900', overflowX: 'auto', maxHeight: '500px', overflowY: 'auto' }}>
+          <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', color: 'lightgreen', margin: 0, fontFamily: 'monospace', fontSize: '0.85rem' }}>
+            {typeof out === 'string' ? out : JSON.stringify(out, null, 2)}
+          </pre>
+        </Paper>
+      );
+    }
+    // Keys to render: prefer the schema's declared order if it has 2+ keys
+    // so we render a slot for each declared key even when the agent omits
+    // some. Single-key schemas (the default {outputText:"string"} case)
+    // fall through to using the output's actual keys, since there's nothing
+    // to highlight by anticipating one key that's almost certainly there.
+    const schemaKeys = schema ? Object.keys(schema) : [];
+    const outKeys = Object.keys(out);
+    const keys = schemaKeys.length >= 2 ? schemaKeys : outKeys;
+    return (
+      <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+        {keys.map((key) => {
+          const value = out[key];
+          const isMissing = !(key in out);
+          const declaredType = schema?.[key];
+          const label = declaredType ? `${key} (${declaredType})` : key;
+          let body;
+          if (isMissing) {
+            body = <em style={{ color: '#999' }}>not returned by agent</em>;
+          } else if (value === null || value === undefined) {
+            body = <em style={{ color: '#999' }}>{String(value)}</em>;
+          } else if (typeof value === 'string') {
+            body = value;
+          } else {
+            body = JSON.stringify(value, null, 2);
+          }
+          return (
+            <Box key={key}>
+              <Typography variant="subtitle2" sx={{ mb: 0.5, color: 'text.secondary' }}>
+                {label}
+              </Typography>
+              <Paper variant="outlined" sx={{ p: 2, bgcolor: 'grey.900', overflowX: 'auto', maxHeight: '400px', overflowY: 'auto' }}>
+                <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', color: 'lightgreen', margin: 0, fontFamily: 'monospace', fontSize: '0.85rem' }}>
+                  {body}
+                </pre>
+              </Paper>
+            </Box>
+          );
+        })}
+        {/* Extra keys the agent returned that weren't declared in schema.
+            Surfaced separately so they're visible but don't dilute the
+            primary view; helps diagnose agents drifting from their declared
+            shape. */}
+        {schemaKeys.length >= 2 && outKeys.filter(k => !schemaKeys.includes(k)).length > 0 && (
+          <Box>
+            <Typography variant="subtitle2" sx={{ mb: 0.5, color: 'warning.main' }}>
+              Extra keys not in schema
+            </Typography>
+            <Paper variant="outlined" sx={{ p: 2, bgcolor: 'grey.900', overflowX: 'auto', maxHeight: '300px', overflowY: 'auto' }}>
+              <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', color: 'orange', margin: 0, fontFamily: 'monospace', fontSize: '0.85rem' }}>
+                {JSON.stringify(
+                  Object.fromEntries(outKeys.filter(k => !schemaKeys.includes(k)).map(k => [k, out[k]])),
+                  null, 2
+                )}
+              </pre>
+            </Paper>
+          </Box>
+        )}
+      </Box>
+    );
+  };
+
   return (
     <Box sx={{
       maxWidth: 1400,
@@ -598,11 +683,7 @@ const RunsScreen = () => {
             </Alert>
           )}
           <Typography variant="h6" sx={{ mb: 1 }}>Output</Typography>
-          <Paper variant="outlined" sx={{ p: 2, bgcolor: 'grey.900', overflowX: 'auto', maxHeight: '500px', overflowY: 'auto' }}>
-            <pre style={{ whiteSpace: 'pre', wordBreak: 'keep-all', color: 'lightgreen', margin: 0, fontFamily: 'monospace', fontSize: '0.85rem' }}>
-              {JSON.stringify(output, null, 2)}
-            </pre>
-          </Paper>
+          {renderOutput(output, outputSchema)}
         </Box>
       )}
 
