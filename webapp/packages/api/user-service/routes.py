@@ -726,6 +726,7 @@ async def run_agent_code_stream(
                 user_basic_info=user_basic_info,
                 agent_name=request.friendly_name or "sandbox_agent",
                 trace=trace,
+                env_vars=request.env_vars,
             )
             schema_warnings = validate_output_against_schema(result, request.output_schema)
             if schema_warnings:
@@ -850,6 +851,7 @@ async def run_agent_code(
                 user_basic_info=user_basic_info,
                 agent_name=request.friendly_name or "sandbox_agent",
                 trace=trace,
+                env_vars=request.env_vars,
             )
         except Exception as _exc:
             logger.log(

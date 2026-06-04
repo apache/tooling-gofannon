@@ -207,6 +207,11 @@ class RunCodeRequest(BaseModel):
     # group nested-agent activity. Falls back to "sandbox_agent" if not
     # provided (legacy clients).
     friendly_name: Optional[str] = Field(default=None, alias="friendlyName")
+    # ISSUE-008 follow-up: per-agent env vars threaded from the editor so the
+    # runtime overlay sees them. Without this the /agents/run-code endpoints
+    # had no way to know which env_vars belong to the code being run, since
+    # they receive code as a payload rather than fetching an agent record.
+    env_vars: Optional[List[AgentEnvVar]] = Field(default=None, alias="envVars")
     model_config = ConfigDict(populate_by_name=True)
 
 class RunCodeResponse(BaseModel):

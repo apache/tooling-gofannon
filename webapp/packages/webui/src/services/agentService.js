@@ -123,6 +123,7 @@ class AgentService {
   async runCodeInSandboxStreaming(
     code, inputDict, tools, gofannonAgents, llmSettings, outputSchema, friendlyName,
     onEvent,
+    envVars,
   ) {
     const requestBody = {
       code,
@@ -132,6 +133,8 @@ class AgentService {
       llmSettings,
       outputSchema,
       friendlyName,
+      // ISSUE-008: per-agent env vars threaded to the runtime overlay
+      envVars,
     };
 
     const authHeaders = await this._getAuthHeaders();

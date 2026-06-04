@@ -314,6 +314,7 @@ const RunsScreen = () => {
       const response = await agentService.runCodeInSandboxStreaming(
         generatedCode, castInput, tools, gofannonAgents, llmSettings, outputSchema, friendlyName,
         onTraceEvent,
+        agentData?.envVars,
       );
       if (response.error) {
         setError(response.error);
