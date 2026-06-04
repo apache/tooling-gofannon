@@ -116,6 +116,17 @@ def get_db() -> Generator[DatabaseService, None, None]:
     yield get_database_service(settings)
 
 
+def get_async_db():
+    """Async-facade over the same underlying DatabaseService.
+
+    Use from async route handlers that need to read/write CouchDB without
+    blocking the event loop. Sync DatabaseService still available via the
+    .sync property for code paths that genuinely need it.
+    """
+    from services.database_service.async_shim import AsyncDatabaseService
+    return AsyncDatabaseService(get_database_service(settings))
+
+
 def get_logger() -> ObservabilityService:
     """Dependency to get the observability service instance."""
     return get_observability_service()

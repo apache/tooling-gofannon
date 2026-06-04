@@ -18,6 +18,7 @@ from dependencies import (
     fetch_spec_content,
     get_agent_deployment,
     get_available_providers,
+    get_async_db,
     get_db,
     get_logger,
     get_user_service_dep,
@@ -520,12 +521,12 @@ async def create_agent(
 @router.get("/agents", response_model=List[Agent])
 async def list_agents(
     req: Request,
-    db: DatabaseService = Depends(get_db),
+    db = Depends(get_async_db),  # async shim — don't block event loop
     user: dict = Depends(get_current_user),
     logger: ObservabilityService = Depends(get_logger)
 ):
     """Lists all saved agents."""
-    all_docs = db.list_all("agents")
+    all_docs = await db.list_all("agents")
     logger.log("INFO", "user_action", "Listed all agents.", metadata={"request": get_sanitized_request_data(req)})
     return [Agent(**doc) for doc in all_docs]
 
@@ -1206,9 +1207,9 @@ async def create_demo_app(request: CreateDemoAppRequest, db: DatabaseService = D
 
 
 @router.get("/demos", response_model=List[DemoApp])
-async def list_demo_apps(db: DatabaseService = Depends(get_db), user: dict = Depends(get_current_user)):
+async def list_demo_apps(db = Depends(get_async_db), user: dict = Depends(get_current_user)):
     """Lists all saved demo apps."""
-    all_docs = db.list_all("demos")
+    all_docs = await db.list_all("demos")
     return [DemoApp(**doc) for doc in all_docs]
 
 
@@ -1288,14 +1289,14 @@ def _namespace_stats_from_docs(docs: List[Dict[str, Any]]) -> Dict[str, Dict[str
 
 @router.get("/data-store/namespaces", response_model=NamespaceListResponse)
 async def list_data_store_namespaces(
-    db: DatabaseService = Depends(get_db),
+    db = Depends(get_async_db),
     user: dict = Depends(get_current_user),
 ):
     """List every namespace with aggregate stats for the current user."""
     user_id = user.get("uid", "anonymous")
     # list_all + filter: simpler than adding a new service method, and
     # record counts are typically small. Could move to indexed query later.
-    all_docs = db.find("agent_data_store", {"userId": user_id})
+    all_docs = await db.find("agent_data_store", {"userId": user_id})
     stats_map = _namespace_stats_from_docs(all_docs)
     namespaces = [
         NamespaceStats(namespace=ns, **data)
