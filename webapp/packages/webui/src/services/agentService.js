@@ -124,6 +124,7 @@ class AgentService {
     code, inputDict, tools, gofannonAgents, llmSettings, outputSchema, friendlyName,
     onEvent,
     envVars,
+    abortSignal,
   ) {
     const requestBody = {
       code,
@@ -148,6 +149,9 @@ class AgentService {
       body: JSON.stringify(requestBody),
       // Cookies must flow for session auth.
       credentials: 'include',
+      // ISSUE-007 follow-up: caller can pass an AbortSignal to stop the
+      // stream from the client side.
+      signal: abortSignal,
     });
 
     if (!response.ok) {
@@ -210,6 +214,15 @@ class AgentService {
         if (frame.event === 'trace') {
           try {
             onEvent && onEvent(frame.data);
+          } catch (err) {
+            console.error('[AgentService] onEvent handler threw:', err);
+          }
+        } else if (frame.event === 'run_id') {
+          // ISSUE-007 follow-up: surface runId to the caller so the
+          // Stop button can address the run. Wrapped in {type, data}
+          // so the caller can disambiguate from raw trace events.
+          try {
+            onEvent && onEvent({ type: 'run_id', data: frame.data });
           } catch (err) {
             console.error('[AgentService] onEvent handler threw:', err);
           }

@@ -713,6 +713,24 @@ async def run_agent_code_stream(
     queue: asyncio.Queue = asyncio.Queue()
     trace.attach_queue(queue)
 
+    # ISSUE-007 follow-up: register this run with the registry + cancel
+    # registry so the client can address it for stop. Stream's runId is
+    # emitted as the first SSE event ("run_id") so RunsScreen can capture
+    # it and enable the Stop button. The streaming endpoint still pins
+    # its worker (we haven't moved to the start-then-subscribe model
+    # here), but the runId binding makes stop wiring possible.
+    from services.run_registry import get_run_registry
+    from services.run_cancel_registry import publish as register_cancel_token
+    from services.cancel_token import CancelToken
+
+    _registry = get_run_registry()
+    _run_record = _registry.new_record(
+        user_id=user.get("uid") or "anonymous",
+        agent_name=request.friendly_name or "sandbox_agent",
+    )
+    _cancel_token = CancelToken()
+    register_cancel_token(_run_record.run_id, _cancel_token)
+
     # Sentinel posted to the queue when the agent finishes (success
     # or error) so the streaming generator knows to stop pulling.
     DONE_SENTINEL = object()
@@ -765,6 +783,11 @@ async def run_agent_code_stream(
             await queue.put(DONE_SENTINEL)
 
     async def event_generator():
+        # ISSUE-007 follow-up: emit run_id as the first frame so the
+        # client can render the Stop button without waiting for the
+        # first trace event.
+        yield f"event: run_id\ndata: {json.dumps({'runId': _run_record.run_id, 'status': 'running'})}\n\n"
+
         # Kick off the agent. The task runs concurrently with this
         # generator; events flow through the queue.
         agent_task = asyncio.create_task(run_agent_task())

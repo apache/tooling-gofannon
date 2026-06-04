@@ -18,6 +18,7 @@ import {
   Tooltip,
 } from '@mui/material';
 import PlayArrowIcon from '@mui/icons-material/PlayArrow';
+import StopIcon from '@mui/icons-material/Stop';
 import ArrowBackIcon from '@mui/icons-material/ArrowBack';
 import HelpOutlineIcon from '@mui/icons-material/HelpOutline';
 import observabilityService from '../../services/observabilityService';
@@ -152,6 +153,16 @@ const RunsScreen = () => {
   const [output, setOutput] = useState(null);
   const [error, setError] = useState(null);
   const [isLoading, setIsLoading] = useState(false);
+  // ISSUE-007 follow-up: track the active run's id so we can render
+  // a Stop button while it's in flight. Set from the first 'run_id'
+  // SSE event; cleared in handleRun's finally.
+  const [currentRunId, setCurrentRunId] = useState(null);
+  // AbortController for the streaming fetch. Stop button uses this to
+  // cut the client off immediately, then best-effort POSTs to
+  // /runs/{id}/stop so the backend cancels server-side work via the
+  // cancel-token check that ISSUE-007 wired into data_store_service
+  // and llm_service.
+  const abortRef = React.useRef(null);
   // Warnings from the server-side output-schema validator. Advisory only —
   // the agent ran successfully, but its return value didn't match the
   // declared output_schema (e.g. returned {"outputText": ...} instead of
@@ -299,6 +310,12 @@ const RunsScreen = () => {
       // final response — it sets the run's outcome and any leftover
       // fields (ops_log, schema warnings).
       const onTraceEvent = (event) => {
+        // ISSUE-007 follow-up: capture runId from the first 'run_id' event
+        // so the Stop button becomes enabled.
+        if (event && event.type === 'run_id' && event.data && event.data.runId) {
+          setCurrentRunId(event.data.runId);
+          return;
+        }
         setRuns((prev) => {
           const next = [...prev];
           const idx = next.length - 1;
@@ -311,10 +328,15 @@ const RunsScreen = () => {
         });
       };
 
+      // ISSUE-007 follow-up: AbortController for the streaming fetch.
+      // Stored in the ref so handleStop can call .abort() on it.
+      const abort = new AbortController();
+      abortRef.current = abort;
       const response = await agentService.runCodeInSandboxStreaming(
         generatedCode, castInput, tools, gofannonAgents, llmSettings, outputSchema, friendlyName,
         onTraceEvent,
         agentData?.envVars,
+        abort.signal,
       );
       if (response.error) {
         setError(response.error);
@@ -352,6 +374,40 @@ const RunsScreen = () => {
         });
       }
     } catch (err) {
+      // ISSUE-007 follow-up: distinguish a user-initiated stop from a real
+      // transport error. AbortController.abort() makes the streaming fetch's
+      // body stream throw with name='AbortError' or a 'BodyStreamBuffer was
+      // aborted' message depending on browser. Neither is a failure -- the
+      // user clicked Stop. Mark the run as 'stopped' and skip the red error
+      // banner / observability noise.
+      const isAbort = err && (err.name === 'AbortError' || /abort/i.test(err.message || ''));
+      if (isAbort) {
+        setRuns((prev) => {
+          const next = [...prev];
+          if (next.length > 0 && next[next.length - 1].outcome === 'running') {
+            const r = next[next.length - 1];
+            next[next.length - 1] = {
+              ...r,
+              outcome: 'stopped',
+              duration_ms: Date.now() - r._started_ms,
+              events: [
+                ...(r.events || []),
+                {
+                  type: 'stopped',
+                  ts: new Date().toISOString(),
+                  agent_name: r.agent_name || 'unknown',
+                  depth: 0,
+                  message: 'Run stopped by user. Backend cancellation may take a moment to propagate to the next structural boundary.',
+                  source: 'system',
+                },
+              ],
+            };
+          }
+          return next;
+        });
+        return;
+      }
+
       setError(err.message || 'An unexpected error occurred.');
       observabilityService.logError(err, { context: 'Agent Run Execution' });
       // Mark the in-flight run as errored so the Progress Log doesn't
@@ -383,6 +439,28 @@ const RunsScreen = () => {
       });
     } finally {
       setIsLoading(false);
+      setCurrentRunId(null);
+      abortRef.current = null;
+    }
+  };
+
+  // ISSUE-007 follow-up: stop a run in flight. Client-side abort frees
+  // the user from the running view immediately; backend POST sets the
+  // cancel token, which ISSUE-007 already wired into data_store_service
+  // and llm_service so the agent's next structural boundary raises.
+  const handleStop = async () => {
+    if (abortRef.current) {
+      try { abortRef.current.abort(); } catch { /* ignore */ }
+    }
+    if (currentRunId) {
+      try {
+        await fetch(`/runs/${encodeURIComponent(currentRunId)}/stop`, {
+          method: 'POST',
+          credentials: 'include',
+        });
+      } catch (e) {
+        console.warn('Stop request failed:', e);
+      }
     }
   };
 
@@ -646,14 +724,29 @@ const RunsScreen = () => {
         <Box component="form" noValidate autoComplete="off">
           <Typography variant="h6" sx={{ mb: 1 }}>Input</Typography>
           {renderFormFields()}
-          <Button
-            variant="contained"
-            onClick={async () => { await handleRun(); }}
-            disabled={isLoading || !generatedCode}
-            startIcon={isLoading ? <CircularProgress size={20} color="inherit" /> : <PlayArrowIcon />}
-          >
-            {isLoading ? 'Running...' : 'Run Agent'}
-          </Button>
+          <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
+            <Button
+              variant="contained"
+              onClick={async () => { await handleRun(); }}
+              disabled={isLoading || !generatedCode}
+              startIcon={isLoading ? <CircularProgress size={20} color="inherit" /> : <PlayArrowIcon />}
+            >
+              {isLoading ? 'Running...' : 'Run Agent'}
+            </Button>
+            {/* ISSUE-007 follow-up: Stop button visible while in flight.
+                Disabled until the first 'run_id' SSE event arrives. */}
+            {isLoading && (
+              <Button
+                variant="outlined"
+                color="error"
+                onClick={handleStop}
+                disabled={!currentRunId}
+                startIcon={<StopIcon />}
+              >
+                Stop
+              </Button>
+            )}
+          </Box>
         </Box>
       )}
 
