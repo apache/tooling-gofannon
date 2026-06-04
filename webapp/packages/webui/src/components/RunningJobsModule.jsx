@@ -2,15 +2,17 @@
 //
 // ISSUE-006 — cross-agent view of "what's running" on the home page.
 // Polls GET /runs every 5s and renders each non-terminal run plus the
-// most recent N completed runs. Status chip color encodes terminal state.
+// most recent N completed runs. Status chip color encodes terminal
+// state.
 //
 // Deliberately uses polling rather than per-row SSE — this is an
-// at-a-glance overview, and 30+ concurrent EventSources for users with
-// many agents would be wasteful.
+// at-a-glance overview, and 30+ concurrent EventSources for users
+// with many agents would be wasteful.
 
 import React, { useEffect, useState } from 'react';
-import { Paper, Box, Typography, Chip, CircularProgress, Stack, Link } from '@mui/material';
-import { Link as RouterLink } from 'react-router-dom';
+import { Paper, Box, Typography, Chip, CircularProgress, Stack, Link, Button } from '@mui/material';
+import { Link as RouterLink, useNavigate } from 'react-router-dom';
+import PendingActionsIcon from '@mui/icons-material/PendingActions';
 import { listRuns } from '../services/runService';
 
 const POLL_INTERVAL_MS = 5000;
@@ -24,6 +26,7 @@ const STATUS_CHIP = {
 };
 
 export default function RunningJobsModule() {
+  const navigate = useNavigate();
   const [runs, setRuns] = useState([]);
   const [loading, setLoading] = useState(true);
 
@@ -56,39 +59,68 @@ export default function RunningJobsModule() {
     };
   }, []);
 
-  const running  = runs.filter((r) => r.status === 'running');
-  const recent   = runs.filter((r) => r.status !== 'running').slice(0, MAX_COMPLETED_SHOWN);
+  const running = runs.filter((r) => r.status === 'running');
+  const recent  = runs.filter((r) => r.status !== 'running').slice(0, MAX_COMPLETED_SHOWN);
 
   return (
-    <Paper sx={{ p: 2, mb: 3 }}>
-      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1.5 }}>
-        <Typography variant="h6">Running Jobs</Typography>
-        {loading && <CircularProgress size={16} />}
+    <Paper sx={{ overflow: 'hidden' }}>
+      {/* Header matches the Data Stores / Agents pattern on the home
+          page: icon + title + count chip on the left, View all on
+          the right. */}
+      <Box sx={{
+        p: 2,
+        display: 'flex',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        borderBottom: '1px solid #e4e4e7',
+        bgcolor: '#fafafa',
+      }}>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+          <PendingActionsIcon sx={{ fontSize: 20, color: 'text.secondary' }} />
+          <Typography variant="h6" sx={{ fontWeight: 600, fontSize: '1rem' }}>Running Jobs</Typography>
+          <Chip label={`All (${runs.length})`} size="small" sx={{ height: 22, fontSize: '0.72rem' }} />
+          {loading && <CircularProgress size={14} sx={{ ml: 1 }} />}
+        </Box>
+        <Button
+          variant="outlined"
+          size="small"
+          onClick={() => navigate('/runs')}
+          disabled={runs.length === 0}
+        >
+          View all
+        </Button>
       </Box>
 
-{!loading && running.length === 0 && recent.length === 0 && (
-        <Typography variant="body2" color="text.secondary">
-          No runs yet. Kick off an agent to see live status here.
-        </Typography>
-      )}
+      <Box sx={{ p: 2 }}>
+        {!loading && running.length === 0 && recent.length === 0 && (
+          <Box sx={{ py: 3, textAlign: 'center' }}>
+            <Typography color="text.secondary" variant="body2">
+              No runs yet
+            </Typography>
+            <Typography color="text.secondary" variant="caption" sx={{ display: 'block', mt: 0.5 }}>
+              Kick off an agent to see live status here.
+            </Typography>
+          </Box>
+        )}
 
-      {running.length > 0 && (
-        <Box sx={{ mb: 1.5 }}>
-          <Typography variant="caption" color="text.secondary">In flight</Typography>
-          <Stack spacing={0.5} sx={{ mt: 0.5 }}>
-            {running.map((r) => <RunRow key={r.runId} run={r} />)}
-          </Stack>
-        </Box>
-      )}
+        {running.length > 0 && (
+          <Box sx={{ mb: 1.5 }}>
+            <Typography variant="caption" color="text.secondary">In flight</Typography>
+            <Stack spacing={0.5} sx={{ mt: 0.5 }}>
+              {running.map((r) => <RunRow key={r.runId} run={r} />)}
+            </Stack>
+          </Box>
+        )}
 
-      {recent.length > 0 && (
-        <Box>
-          <Typography variant="caption" color="text.secondary">Recent</Typography>
-          <Stack spacing={0.5} sx={{ mt: 0.5 }}>
-            {recent.map((r) => <RunRow key={r.runId} run={r} />)}
-          </Stack>
-        </Box>
-      )}
+        {recent.length > 0 && (
+          <Box>
+            <Typography variant="caption" color="text.secondary">Recent</Typography>
+            <Stack spacing={0.5} sx={{ mt: 0.5 }}>
+              {recent.map((r) => <RunRow key={r.runId} run={r} />)}
+            </Stack>
+          </Box>
+        )}
+      </Box>
     </Paper>
   );
 }

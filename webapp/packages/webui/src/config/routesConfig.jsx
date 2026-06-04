@@ -10,6 +10,7 @@ import DemoAppsPage from '../pages/DemoAppsPage';
 import ViewDemoAppPage from '../pages/ViewDemoAppPage';
 import DataStoresPage from '../pages/DataStoresPage';
 import DataStoreBrowser from '../pages/DataStoreBrowser';
+import RunsPage from '../pages/RunsPage';
 import RunsScreen from '../pages/AgentCreationFlow/RunsScreen';
 import DeployScreen from '../pages/AgentCreationFlow/DeployScreen';
 import SelectApisScreen from '../pages/DemoCreationFlow/SelectApisScreen';
@@ -58,6 +59,10 @@ export const defaultRoutes = [
   {
     path: '/data-stores/:namespace',
     element: <DataStoreBrowser />,
+  },
+  {
+    path: '/runs',
+    element: <RunsPage />,
   },
   {
     path: '/profile/:section?',
