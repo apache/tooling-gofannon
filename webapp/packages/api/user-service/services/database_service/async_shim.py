@@ -45,13 +45,14 @@ class AsyncDatabaseService:
         self,
         db_name: str,
         selector: Dict[str, Any],
-        limit: Optional[int] = None,
-        fields: Optional[List[str]] = None,
-        sort: Optional[List[Dict[str, Any]]] = None,
+        **kwargs,
     ) -> List[Dict[str, Any]]:
-        return await asyncio.to_thread(
-            self._sync.find, db_name, selector, limit=limit, fields=fields, sort=sort
-        )
+        # kwargs passthrough so the shim doesn't need updating when the
+        # sync find() signature changes. Current sync signature accepts
+        # fields and limit; an earlier shim version enumerated a sort
+        # kwarg that the sync class never supported, which exploded the
+        # moment a real route exercised it.
+        return await asyncio.to_thread(self._sync.find, db_name, selector, **kwargs)
 
     async def get_many(self, db_name: str, doc_ids: List[str]) -> List[Dict[str, Any]]:
         return await asyncio.to_thread(self._sync.get_many, db_name, doc_ids)
@@ -70,8 +71,10 @@ class AsyncDatabaseService:
     async def delete_many(self, db_name: str, doc_ids: List[str]):
         return await asyncio.to_thread(self._sync.delete_many, db_name, doc_ids)
 
-    async def ensure_index(self, db_name: str, fields: List[str], name: Optional[str] = None):
-        return await asyncio.to_thread(self._sync.ensure_index, db_name, fields, name=name)
+    async def ensure_index(self, db_name: str, fields: List[str], **kwargs):
+        # Sync signature uses index_name (not name); pass-through avoids
+        # the naming mismatch.
+        return await asyncio.to_thread(self._sync.ensure_index, db_name, fields, **kwargs)
 
     # --- escape hatch ---
 
