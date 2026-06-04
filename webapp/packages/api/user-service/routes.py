@@ -164,15 +164,23 @@ async def get_current_user(request: Request, token: str = Depends(oauth2_scheme)
             return user
         # Cookie present but invalid/expired -- don't fall through to
         # Firebase with stale cookie. Return 401 so the client clears it.
-        raise HTTPException(status_code=401, detail="Session expired or invalid")
+        # ISSUE-010: emit X-Auth-Reason so the SPA distinguishes session
+        # expiry from authz-denied for a better re-login UX.
+        raise HTTPException(
+            status_code=401,
+            detail="Session expired or invalid",
+            headers={"X-Auth-Reason": "session_expired"},
+        )
 
     # 2) Legacy Firebase path
     if settings.APP_ENV == "firebase":
         return await _verify_firebase_token(request, token)
 
+    # ISSUE-010: emit X-Auth-Reason for the SPA's expiry modal.
     raise HTTPException(
         status_code=401,
         detail="Not authenticated. Session cookie missing or invalid.",
+        headers={"X-Auth-Reason": "not_authenticated"},
     )
 
 

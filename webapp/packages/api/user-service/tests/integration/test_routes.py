@@ -301,6 +301,66 @@ def test_expired_session_cookie_returns_401(monkeypatch):
     assert response.json()["detail"] == "Session expired or invalid"
 
 
+# ISSUE-010 -- backend half of the session-expiry UX. The X-Auth-Reason header
+# distinguishes expired-cookie cases (the SPA should pop the AuthExpiryModal)
+# from never-authenticated cases (handled by route guards / redirects). The
+# frontend's services/fetchInterceptor.js reads this header to decide whether
+# to fire the auth:session-expired event.
+
+def test_expired_session_emits_x_auth_reason_session_expired(monkeypatch):
+    """Expired/invalid cookie -> 401 + X-Auth-Reason: session_expired."""
+    import routes as routes_module
+
+    async def missing_session(request: Request, sid: str):
+        return None
+
+    monkeypatch.setattr(routes_module, "_verify_session_cookie", missing_session)
+
+    app = create_app()
+    client = TestClient(app)
+    response = client.get("/users/me", cookies={"gofannon_sid": "expired"})
+
+    assert response.status_code == 401
+    assert response.headers.get("X-Auth-Reason") == "session_expired"
+
+
+def test_no_cookie_emits_x_auth_reason_not_authenticated(monkeypatch):
+    """No cookie at all -> 401 + X-Auth-Reason: not_authenticated.
+
+    Different reason from session_expired so the SPA can render
+    'sign in' vs 'sign in again' messaging appropriately.
+    """
+    monkeypatch.setattr(settings, "APP_ENV", "production")
+
+    app = create_app()
+    client = TestClient(app)
+    response = client.get("/users/me")  # no cookie
+
+    assert response.status_code == 401
+    assert response.headers.get("X-Auth-Reason") == "not_authenticated"
+
+
+def test_valid_session_no_x_auth_reason_header(monkeypatch):
+    """Valid session -> no X-Auth-Reason header on the success response.
+
+    The header is a 401-only signal. Adding it to 2xx responses would
+    confuse the interceptor and could fire spurious expiry modals.
+    """
+    import routes as routes_module
+
+    async def valid_session(request: Request, sid: str):
+        return {"uid": "user-1", "email": "u@example.com", "auth_mode": "session"}
+
+    monkeypatch.setattr(routes_module, "_verify_session_cookie", valid_session)
+
+    app = create_app()
+    client = TestClient(app)
+    response = client.get("/users/me", cookies={"gofannon_sid": "valid"})
+
+    assert response.status_code == 200
+    assert "X-Auth-Reason" not in response.headers
+
+
 def test_dev_stub_picker_returns_404_outside_dev_env(monkeypatch):
     auth_config = {
         "providers": [
