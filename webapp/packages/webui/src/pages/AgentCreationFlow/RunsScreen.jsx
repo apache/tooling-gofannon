@@ -226,7 +226,7 @@ const RunsScreen = () => {
       }
     })();
     return () => { cancelled = true; };
-  }, [runId, runs]);
+  }, [runId, runs, completionTick]);
 
   // Load the past-runs list from the run registry, filtered to this
   // agent. Refetches when completionTick bumps (after a streaming run
@@ -548,12 +548,20 @@ const RunsScreen = () => {
     if (abortRef.current) {
       try { abortRef.current.abort(); } catch { /* ignore */ }
     }
-    if (currentRunId) {
+    // Fall back to the URL-param runId when this tab didn't start the
+    // run (deep-link revisit to a long-running agent). The backend
+    // doesn't care who initiates the stop -- the cancel token is
+    // looked up in the registry by runId.
+    const stopTarget = currentRunId || runId;
+    if (stopTarget) {
       try {
-        await fetch(`/runs/${encodeURIComponent(currentRunId)}/stop`, {
+        await fetch(`/runs/${encodeURIComponent(stopTarget)}/stop`, {
           method: 'POST',
           credentials: 'include',
         });
+        // Refresh the fetchedRun + historicalRuns so the status chip
+        // flips to 'stopped' once the backend confirms.
+        setCompletionTick((n) => n + 1);
       } catch (e) {
         console.warn('Stop request failed:', e);
       }
@@ -832,14 +840,16 @@ const RunsScreen = () => {
             >
               {isLoading ? 'Running...' : 'Run Agent'}
             </Button>
-            {/* ISSUE-007 follow-up: Stop button visible while in flight.
-                Disabled until the first 'run_id' SSE event arrives. */}
-            {isLoading && (
+            {/* Stop button visible when either (a) we have an in-flight
+                run in this tab, or (b) we're viewing a deep-linked run
+                whose registry status is still 'running'. Disabled only
+                when there's nothing to identify the run by. */}
+            {(isLoading || (fetchedRun && fetchedRun.status === 'running')) && (
               <Button
                 variant="outlined"
                 color="error"
                 onClick={handleStop}
-                disabled={!currentRunId}
+                disabled={!currentRunId && !runId}
                 startIcon={<StopIcon />}
               >
                 Stop
@@ -893,7 +903,16 @@ const RunsScreen = () => {
           <RunsHistoryList
             runs={agentId ? historicalRuns : runs}
             inputSchema={inputSchema}
-            onOpen={(rId) => navigate(`/agent/${agentId}/runs/${rId}`)}
+            onOpen={(rId) => {
+              // No-op when the clicked row is the run we're already
+              // viewing -- otherwise repeated clicks on the same row
+              // pile up identical history entries and the back arrow
+              // has to be pressed once per click to escape.
+              const target = `/agent/${agentId}/runs/${rId}`;
+              if (target !== window.location.pathname) {
+                navigate(target);
+              }
+            }}
             onRerun={(rInput) => {
               // Fill the form with this run's inputs without
               // navigating; user clicks Run when ready. Convert
