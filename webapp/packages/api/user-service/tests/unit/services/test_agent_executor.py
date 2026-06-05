@@ -101,3 +101,35 @@ async def test_cancel_token_works_across_threads():
 
     with pytest.raises(AgentStopped):
         await execute_in_thread(agent_coro, cancel)
+
+
+@pytest.mark.asyncio
+async def test_stop_interrupts_mid_await():
+    """request_stop() interrupts the agent at its next await, not at
+    its next check_should_stop() structural boundary. This is what
+    makes a stop pressed during a long Bedrock call take effect
+    immediately instead of after the call returns."""
+    import time as _t
+    cancel = CancelToken()
+
+    async def agent_coro():
+        # An await with no check_should_stop boundaries -- analogue
+        # of a long-running LLM call.
+        await asyncio.sleep(10.0)
+        return "should-not-reach-here"
+
+    async def stopper():
+        await asyncio.sleep(0.1)
+        cancel.request_stop()
+
+    asyncio.create_task(stopper())
+
+    start = _t.monotonic()
+    with pytest.raises(AgentStopped):
+        await execute_in_thread(agent_coro, cancel)
+    elapsed = _t.monotonic() - start
+    # Should resolve within 1s of the stopper firing at 0.1s -- if
+    # cancel isn\'t mid-await-aware, this would take the full 10s.
+    assert elapsed < 1.5, (
+        f"stop should take effect mid-await; took {elapsed:.2f}s"
+    )

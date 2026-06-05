@@ -33,14 +33,40 @@ class CancelToken:
     asyncio task switching never preempts a sync attribute write, so the
     obvious dataclass works. Adding a Lock would be slower without
     being safer.
+
+    Optional on_stop hook fires when request_stop() is called. The
+    Path A executor uses this to also cancel the agent task on its
+    own loop -- without it, an agent mid-LLM-call doesn't notice the
+    stop until the LLM call returns, because check_should_stop only
+    fires at structural boundaries. Task cancellation interrupts at
+    the next await, which is exactly the await we're stuck on.
     """
     _stopped: bool = False
+    _on_stop: Optional["object"] = None  # zero-arg callable
 
     def request_stop(self) -> None:
         self._stopped = True
+        cb = self._on_stop
+        if cb is not None:
+            try:
+                cb()
+            except Exception:
+                # Callback failures must never propagate out of
+                # request_stop -- the stop bit is the source of truth
+                # for cooperative cancellation; the callback is just
+                # the prompt-interrupt optimization.
+                pass
 
     def is_stopped(self) -> bool:
         return self._stopped
+
+    def set_on_stop(self, cb) -> None:
+        """Register a zero-arg callable to fire on request_stop. The
+        callable runs synchronously from whatever thread called
+        request_stop(); it must be cheap and thread-safe (typically
+        loop.call_soon_threadsafe to schedule actual work elsewhere).
+        Passing None clears the hook."""
+        self._on_stop = cb
 
 
 _token: ContextVar[Optional[CancelToken]] = ContextVar("cancel_token", default=None)

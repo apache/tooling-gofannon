@@ -29,7 +29,7 @@ import asyncio
 import threading
 from typing import Any, Awaitable, Callable
 
-from services.cancel_token import CancelToken, bind_token
+from services.cancel_token import CancelToken, bind_token, AgentStopped
 
 
 async def execute_in_thread(
@@ -52,12 +52,46 @@ async def execute_in_thread(
     explicitly. Setting the bit from the worker loop (POST /runs/
     <id>/stop) is fine — bools are thread-safe to read and write.
 
+    Cancellation: we install an on_stop callback on the CancelToken
+    that calls task.cancel() on the agent\'s task via
+    call_soon_threadsafe. This interrupts the agent at the next
+    await -- including mid-LLM-call, mid-httpx-request, etc. Without
+    this, check_should_stop only fires at structural boundaries,
+    which means a stop during a multi-minute Bedrock call doesn\'t
+    take effect until the call returns. The agent runner wraps the
+    resulting CancelledError as AgentStopped so the streaming
+    endpoint\'s existing is_stop detection picks it up unchanged.
+
     Returns the coroutine\'s result or re-raises its exception on
     the calling task. Exceptions propagate naturally through the
     Future\'s ``set_exception``.
     """
     parent_loop = asyncio.get_running_loop()
     result_future: asyncio.Future = parent_loop.create_future()
+
+    # Shared state for the on_stop callback to reach into the agent
+    # thread. Worker reads, agent thread writes. Plain dict; CPython
+    # GIL makes the simple set/get ops atomic, and we tolerate the
+    # benign race of stop arriving before task creation (callback
+    # sees task=None, does nothing; the bit is still set, so the
+    # first await in the agent will be cancelled once the task IS
+    # created).
+    thread_state: dict = {"loop": None, "task": None}
+
+    def _on_stop() -> None:
+        loop = thread_state.get("loop")
+        task = thread_state.get("task")
+        if loop is None or task is None:
+            return
+        # Schedule the cancellation on the agent\'s own loop. cancel()
+        # on a done task is idempotent.
+        try:
+            loop.call_soon_threadsafe(task.cancel)
+        except RuntimeError:
+            # Loop has already closed -- nothing to do.
+            pass
+
+    cancel_token.set_on_stop(_on_stop)
 
     def thread_entry() -> None:
         thread_loop = asyncio.new_event_loop()
@@ -68,15 +102,33 @@ async def execute_in_thread(
             # context so check_should_stop() at structural boundaries
             # inside the agent sees the token.
             bind_token(cancel_token)
+
+            async def runner():
+                try:
+                    return await coro_factory()
+                except asyncio.CancelledError:
+                    # Convert task cancellation to AgentStopped so the
+                    # streaming endpoint\'s except branch can detect
+                    # it the same way it detects a structural-boundary
+                    # stop. CancelledError inherits from BaseException
+                    # (not Exception) in Python 3.8+, so it wouldn\'t
+                    # otherwise be caught by run_agent_task\'s except.
+                    raise AgentStopped("Run was cancelled by stop request")
+
             try:
-                # Build the coroutine inside this thread so its loop
-                # affinity is this thread\'s loop, not the caller\'s.
-                coro = coro_factory()
-                result = thread_loop.run_until_complete(coro)
+                task = thread_loop.create_task(runner())
+                thread_state["loop"] = thread_loop
+                thread_state["task"] = task
+                result = thread_loop.run_until_complete(task)
                 parent_loop.call_soon_threadsafe(_set_result_safe, result_future, result)
             except BaseException as exc:
                 parent_loop.call_soon_threadsafe(_set_exception_safe, result_future, exc)
         finally:
+            # Clear the on_stop hook so a late stop from another
+            # request (highly unlikely but possible if the registry
+            # entry hasn\'t evicted yet) doesn\'t fire into a closed
+            # loop.
+            cancel_token.set_on_stop(None)
             try:
                 thread_loop.close()
             except Exception:
