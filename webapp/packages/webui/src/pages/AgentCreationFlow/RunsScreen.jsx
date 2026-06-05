@@ -183,6 +183,14 @@ const RunsScreen = () => {
   // so fetch it from the registry to pre-fill the form. null until
   // resolved; set to the fetched record on success or null on failure.
   const [fetchedRun, setFetchedRun] = useState(null);
+  // Cross-session past runs for this agent. Sourced from the run
+  // registry via GET /runs?agent_id=<id>. The local `runs` state above
+  // only tracks the live in-session run; this state powers the
+  // 'Past runs' list at the bottom of the page.
+  const [historicalRuns, setHistoricalRuns] = useState([]);
+  // Bump on run completion so the historical-runs fetch effect re-runs
+  // and the newly-finished run appears in the list immediately.
+  const [completionTick, setCompletionTick] = useState(0);
 
   // Read the declared output schema so we can send it to the agent runtime for
   // validation. Falls back to null when unavailable — the backend treats
@@ -219,6 +227,51 @@ const RunsScreen = () => {
     })();
     return () => { cancelled = true; };
   }, [runId, runs]);
+
+  // Load the past-runs list from the run registry, filtered to this
+  // agent. Refetches when completionTick bumps (after a streaming run
+  // finishes), so freshly-completed runs land in the list without a
+  // page reload. agentId-less runs (create-flow sandbox) keep the
+  // pre-registry behavior: nothing in the historical list.
+  useEffect(() => {
+    let cancelled = false;
+    if (!agentId) { setHistoricalRuns([]); return; }
+    (async () => {
+      try {
+        const data = await runService.listRuns(agentId);
+        if (cancelled) return;
+        // Map server keys (runId/startedAt/status/inputDict) to the
+        // local-state shape RunsHistoryList expects (run_id /
+        // started_at / outcome / input). duration_ms is computed
+        // from started/completed timestamps.
+        const mapped = ((data && data.runs) || []).map((r) => ({
+          run_id: r.runId,
+          agent_name: r.agentName,
+          started_at: r.startedAt,
+          duration_ms: r.completedAt
+            ? new Date(r.completedAt).getTime() - new Date(r.startedAt).getTime()
+            : null,
+          outcome: r.status,
+          input: r.inputDict || {},
+          error: r.error || null,
+          // events is only on the full record; errorPreview falls back
+          // to the top-level error string if events is empty/missing,
+          // which is exactly what we want here.
+          events: [],
+        }));
+        // Server returns newest-first; RunsHistoryList reverses before
+        // rendering. Pass oldest-first so the reverse lands in the
+        // order the user expects (newest at top).
+        setHistoricalRuns(mapped.slice().reverse());
+      } catch (e) {
+        if (!cancelled) {
+          console.warn('RunsScreen: listRuns failed:', e?.message || e);
+          setHistoricalRuns([]);
+        }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [agentId, completionTick]);
 
   // runId in the URL), pre-fill with that run's input values so
   // 'tweak and re-run' is one click.
@@ -398,6 +451,9 @@ const RunsScreen = () => {
         // and duration on the run. Don't overwrite events — they're
         // already accumulated in place.
         const finalOutcome = response.error ? 'error' : 'success';
+        // Trigger historical-runs refetch so this run appears in the
+        // past-runs list at the bottom of the page.
+        setCompletionTick((n) => n + 1);
         setRuns((prev) => {
           const next = [...prev];
           if (next.length > 0 && next[next.length - 1].outcome === 'running') {
@@ -420,6 +476,7 @@ const RunsScreen = () => {
       // banner / observability noise.
       const isAbort = err && (err.name === 'AbortError' || /abort/i.test(err.message || ''));
       if (isAbort) {
+        setCompletionTick((n) => n + 1);
         setRuns((prev) => {
           const next = [...prev];
           if (next.length > 0 && next[next.length - 1].outcome === 'running') {
@@ -451,6 +508,7 @@ const RunsScreen = () => {
       // Mark the in-flight run as errored so the Progress Log doesn't
       // spin forever when the request itself failed (network, 5xx,
       // etc — the backend never got far enough to emit a trace).
+      setCompletionTick((n) => n + 1);
       setRuns((prev) => {
         const next = [...prev];
         if (next.length > 0 && next[next.length - 1].outcome === 'running') {
@@ -822,18 +880,18 @@ const RunsScreen = () => {
         </Box>
       )}
 
-      {/* Past runs history list. Hidden when viewing a specific run
-          (the user is already focused on one historical run; the list
-          would just compete for attention). The list is also hidden
-          when there are no runs to show — empty state would just be
-          noise. Future: backed by GET /runs?agent_id=X once the run
-          registry lands; currently reads from in-memory runs[]. */}
-      {!runId && runs.length > 0 && (
+      {/* Past runs list. Sourced from the run registry when this is
+          a saved agent (agentId set); otherwise falls back to the
+          session's in-memory runs[]. Visible whether or not we're
+          viewing a specific runId -- the user can pivot between
+          historical runs from here. Hidden only when there's nothing
+          to show. */}
+      {((agentId ? historicalRuns : runs).length > 0) && (
         <>
           <Divider sx={{ my: 3 }} />
           <Typography variant="h6" sx={{ mb: 1 }}>Past runs</Typography>
           <RunsHistoryList
-            runs={runs}
+            runs={agentId ? historicalRuns : runs}
             inputSchema={inputSchema}
             onOpen={(rId) => navigate(`/agent/${agentId}/runs/${rId}`)}
             onRerun={(rInput) => {

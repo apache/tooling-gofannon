@@ -105,7 +105,12 @@ class RunRecord:
     _completed_at_monotonic: Optional[float] = None
 
     def to_summary(self) -> Dict[str, Any]:
-        """Subset suitable for list endpoints — no events, no result body."""
+        """Subset suitable for list endpoints — no events, no result body.
+
+        Does include inputDict and error so the per-agent past-runs UI
+        can render an input preview and inline error message without
+        firing N+1 full-record fetches for each row.
+        """
         return {
             "runId": self.run_id,
             "agentId": self.agent_id,
@@ -113,6 +118,8 @@ class RunRecord:
             "status": self.status,
             "startedAt": self.started_at.isoformat(),
             "completedAt": self.completed_at.isoformat() if self.completed_at else None,
+            "inputDict": self.input_dict,
+            "error": self.error,
         }
 
     def to_full(self) -> Dict[str, Any]:
@@ -164,9 +171,16 @@ class RunRegistry:
         self._evict_expired()
         return self._records.get(run_id)
 
-    def list_for_user(self, user_id: str, limit: int = 100) -> List[RunRecord]:
+    def list_for_user(
+        self,
+        user_id: str,
+        limit: int = 100,
+        agent_id: Optional[str] = None,
+    ) -> List[RunRecord]:
         self._evict_expired()
         out = [r for r in self._records.values() if r.user_id == user_id]
+        if agent_id is not None:
+            out = [r for r in out if r.agent_id == agent_id]
         out.sort(key=lambda r: r.started_at, reverse=True)
         return out[:limit]
 

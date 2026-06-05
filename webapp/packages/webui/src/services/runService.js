@@ -25,9 +25,15 @@ export async function startRun(payload) {
   return jsonOrThrow(resp, 'startRun');
 }
 
-/** GET /runs — returns {runs: [{runId, agentName, status, startedAt, completedAt}, ...]}. */
-export async function listRuns() {
-  const resp = await fetch(`${BASE}/runs`);
+/** GET /runs — returns {runs: [...]}.
+ *
+ * Pass an `agentId` to restrict to one agent's runs (server-side filter
+ * via ?agent_id=). The per-agent runs screen uses this so its
+ * past-runs list shows only that agent's history.
+ */
+export async function listRuns(agentId) {
+  const qs = agentId ? `?agent_id=${encodeURIComponent(agentId)}` : '';
+  const resp = await fetch(`${BASE}/runs${qs}`);
   return jsonOrThrow(resp, 'listRuns');
 }
 

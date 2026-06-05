@@ -956,11 +956,19 @@ async def start_agent_run(
 
 
 @router.get("/runs")
-async def list_runs(user: dict = Depends(get_current_user)):
-    """List the current user's recent runs (in-memory; up to 100)."""
+async def list_runs(
+    user: dict = Depends(get_current_user),
+    agent_id: Optional[str] = None,
+):
+    """List the current user's recent runs (in-memory; up to 100).
+
+    Pass ``?agent_id=<id>`` to restrict to one agent — the per-agent
+    runs screen uses this so its past-runs list only shows that
+    agent's history rather than everything the user has ever run.
+    """
     from services.run_registry import get_run_registry
     registry = get_run_registry()
-    records = registry.list_for_user(user.get("uid") or "")
+    records = registry.list_for_user(user.get("uid") or "", agent_id=agent_id)
     return {"runs": [r.to_summary() for r in records]}
 
 
