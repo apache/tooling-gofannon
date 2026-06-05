@@ -771,13 +771,20 @@ async def run_agent_code_stream(
             # Update the run registry so /runs and /runs/<id> reflect
             # completion. Without this, every streaming run sits as
             # 'running' until eviction at EVICTION_TTL_SECONDS (1 hour).
-            _registry.mark_complete(
-                _run_record,
-                status="success",
-                result=result,
-                schema_warnings=schema_warnings or None,
-                ops_log=ops_log or None,
-            )
+            try:
+                _registry.mark_complete(
+                    _run_record,
+                    status="success",
+                    result=result,
+                    schema_warnings=schema_warnings or None,
+                    ops_log=ops_log or None,
+                )
+            except Exception:
+                logger.log(
+                    "ERROR", "run_registry_update_failed",
+                    f"mark_complete failed for run {_run_record.run_id}",
+                    metadata={"traceback": traceback.format_exc()},
+                )
             logger.log(
                 "INFO", "sandbox_run",
                 "Agent code executed successfully (streaming).",
@@ -788,16 +795,28 @@ async def run_agent_code_stream(
             # Distinguish a user-initiated stop from a genuine error.
             # AgentStopped is raised by check_should_stop() when the
             # cancel token flips, propagated by the data store / LLM
-            # services. Also check the token directly in case the agent
-            # is doing pure-Python work between checks and the exception
-            # ends up wrapped.
-            is_stop = isinstance(e, AgentStopped) or _cancel_token.is_cancelled()
-            _registry.mark_complete(
-                _run_record,
-                status="stopped" if is_stop else "error",
-                error=f"{type(e).__name__}: {e}",
-                ops_log=final.get("ops_log"),
-            )
+            # services. Also check the token directly in case the
+            # agent did pure-Python work after the stop, didn't hit
+            # a structural check, and exited some other way.
+            is_stop = isinstance(e, AgentStopped) or _cancel_token.is_stopped()
+            # Wrap registry write in its own try -- if mark_complete
+            # itself raises (registry race, etc.), we still want the
+            # log line and the DONE_SENTINEL to reach the stream so
+            # the client doesn't hang. Leaving the record as 'running'
+            # is the symptom we're explicitly trying to avoid.
+            try:
+                _registry.mark_complete(
+                    _run_record,
+                    status="stopped" if is_stop else "error",
+                    error=f"{type(e).__name__}: {e}",
+                    ops_log=final.get("ops_log"),
+                )
+            except Exception:
+                logger.log(
+                    "ERROR", "run_registry_update_failed",
+                    f"mark_complete failed for run {_run_record.run_id}",
+                    metadata={"traceback": traceback.format_exc()},
+                )
             logger.log(
                 "ERROR", "sandbox_run_failure",
                 f"Error running agent code (streaming, trace events: {len(trace.events)})",
