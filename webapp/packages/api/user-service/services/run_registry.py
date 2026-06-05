@@ -485,15 +485,20 @@ class RunRegistry:
         if agent_id is not None:
             selector["agent_id"] = agent_id
         try:
+            # CouchDBService.find doesn't expose Mango sort; fetch
+            # what matches the selector (cap-bounded by limit) and
+            # sort in Python. started_at is an ISO-8601 string so
+            # reverse lex sort gives newest-first. For limit=100
+            # the cost is negligible.
             docs = db.find(
                 RUN_REGISTRY_DB,
                 selector=selector,
-                sort=[{"started_at": "desc"}],
                 limit=limit,
             )
         except Exception as e:
             print(f"[run_registry] list_for_user query failed: {e}", flush=True)
             return []
+        docs.sort(key=lambda d: d.get("started_at", ""), reverse=True)
         return [RunRecord.from_couch_doc(d) for d in docs]
 
     def mark_complete(
