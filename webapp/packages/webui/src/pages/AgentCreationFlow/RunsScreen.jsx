@@ -284,6 +284,27 @@ const RunsScreen = () => {
     return () => { cancelled = true; };
   }, [agentId, completionTick]);
 
+  // While anything visible is still 'running', poll every 5s so a
+  // natural completion (or a delayed stop taking effect once the
+  // agent reaches its next structural boundary) surfaces in the UI
+  // without a manual reload. The home page's RunningJobsModule
+  // already does this for its own snapshot; the per-agent runs page
+  // needs the same so users on this page get the same liveness.
+  //
+  // Auto-stops when nothing's running so we don't peg the API with
+  // pointless requests on a long-idle page.
+  useEffect(() => {
+    const anyRunning = (
+      (fetchedRun && fetchedRun.status === 'running') ||
+      historicalRuns.some((r) => r.outcome === 'running')
+    );
+    if (!anyRunning) return;
+    const id = setInterval(() => {
+      setCompletionTick((n) => n + 1);
+    }, 5000);
+    return () => clearInterval(id);
+  }, [fetchedRun, historicalRuns]);
+
   // runId in the URL), pre-fill with that run's input values so
   // 'tweak and re-run' is one click.
   useEffect(() => {
