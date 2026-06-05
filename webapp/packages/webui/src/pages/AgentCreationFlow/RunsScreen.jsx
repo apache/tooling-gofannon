@@ -183,6 +183,13 @@ const RunsScreen = () => {
   // so fetch it from the registry to pre-fill the form. null until
   // resolved; set to the fetched record on success or null on failure.
   const [fetchedRun, setFetchedRun] = useState(null);
+  // Local 'stop is in flight' flag flipped on Stop click and cleared
+  // when the backend confirms the run has actually moved off
+  // 'running'. Gives the button immediate visual feedback
+  // ('Stopping...' disabled) rather than waiting for the next 5s
+  // polling cycle to fetch a new status. Cleared on status change so
+  // a stop that fails (e.g. orphaned worker) re-enables the button.
+  const [stopRequested, setStopRequested] = useState(false);
   // Cross-session past runs for this agent. Sourced from the run
   // registry via GET /runs?agent_id=<id>. The local `runs` state above
   // only tracks the live in-session run; this state powers the
@@ -599,6 +606,13 @@ const RunsScreen = () => {
   // cancel token, which ISSUE-007 already wired into data_store_service
   // and llm_service so the agent's next structural boundary raises.
   const handleStop = async () => {
+    // Optimistic UX: flip the button to 'Stopping...' disabled state
+    // immediately, well before the backend has actually stopped the
+    // run and the next poll has fetched the new status. The status-
+    // change effect below clears the flag once the registry reports
+    // the run as no longer 'running', so a stop that fails (orphaned
+    // worker, etc.) re-enables the button rather than locking it.
+    setStopRequested(true);
     if (abortRef.current) {
       try { abortRef.current.abort(); } catch { /* ignore */ }
     }
@@ -618,9 +632,25 @@ const RunsScreen = () => {
         setCompletionTick((n) => n + 1);
       } catch (e) {
         console.warn('Stop request failed:', e);
+        // Network error -- the backend may or may not have received
+        // the request. Re-enable the button so the user can retry;
+        // if the backend did succeed, the next poll will flip the
+        // status and the effect below will re-disable.
+        setStopRequested(false);
       }
     }
   };
+
+  // Clear the stopRequested flag once the registry reports the run
+  // as no longer 'running'. This handles both the happy path
+  // (status flips to 'stopped' or 'success'/'error') and the
+  // recover-from-failed-stop case where the agent kept running and
+  // a later state change is observed.
+  React.useEffect(() => {
+    if (stopRequested && fetchedRun && fetchedRun.status !== 'running') {
+      setStopRequested(false);
+    }
+  }, [stopRequested, fetchedRun]);
 
   // Append a 'running' entry to runs[] when the user clicks Run, before
   // the request fires. handleRun replaces it with the real outcome on
@@ -903,10 +933,10 @@ const RunsScreen = () => {
                 variant="outlined"
                 color="error"
                 onClick={handleStop}
-                disabled={!currentRunId && !runId}
+                disabled={stopRequested || (!currentRunId && !runId)}
                 startIcon={<StopIcon />}
               >
-                Stop
+                {stopRequested ? 'Stopping…' : 'Stop'}
               </Button>
             )}
           </Box>
