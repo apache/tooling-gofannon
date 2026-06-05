@@ -212,6 +212,7 @@ class DataStoreService:
 
         Uses an indexed query instead of scanning all documents.
         """
+        check_should_stop()  # ISSUE-007
         docs = self.db.find(
             DATA_STORE_DB,
             {"userId": user_id, "namespace": namespace},
@@ -231,6 +232,7 @@ class DataStoreService:
         data for the specified user. Useful for discovering what data
         exists before querying specific namespaces.
         """
+        check_should_stop()  # ISSUE-007
         docs = self.db.find(
             DATA_STORE_DB,
             {"userId": user_id},
@@ -254,6 +256,7 @@ class DataStoreService:
         a one-shot bulk read into N+1 HTTP calls and forking each
         doc's revision history.
         """
+        check_should_stop()  # ISSUE-007
         docs = self.db.find(
             DATA_STORE_DB,
             {"userId": user_id, "namespace": namespace},
@@ -417,6 +420,7 @@ class DataStoreService:
         (or 3 because delete_many internally does a get_many to fetch
         _revs, but that's still O(1) regardless of N).
         """
+        check_should_stop()  # ISSUE-007
         keys = self.list_keys(user_id, namespace)
         if not keys:
             return 0
