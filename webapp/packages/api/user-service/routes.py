@@ -728,6 +728,7 @@ async def run_agent_code_stream(
     _run_record = _registry.new_record(
         user_id=user.get("uid") or "anonymous",
         agent_name=request.friendly_name or "sandbox_agent",
+        agent_id=request.agent_id,
     )
     _cancel_token = CancelToken()
     register_cancel_token(_run_record.run_id, _cancel_token)

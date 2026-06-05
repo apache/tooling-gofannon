@@ -212,6 +212,11 @@ class RunCodeRequest(BaseModel):
     # had no way to know which env_vars belong to the code being run, since
     # they receive code as a payload rather than fetching an agent record.
     env_vars: Optional[List[AgentEnvVar]] = Field(default=None, alias="envVars")
+    # Optional: the agent's CouchDB doc id, when this run is being
+    # executed from a saved agent (vs. the create-flow sandbox before
+    # a save). Threaded through so the run registry can record it and
+    # the runs UI can deep-link to /agent/<agentId>/runs/<runId>.
+    agent_id: Optional[str] = Field(default=None, alias="agentId")
     model_config = ConfigDict(populate_by_name=True)
 
 class RunCodeResponse(BaseModel):

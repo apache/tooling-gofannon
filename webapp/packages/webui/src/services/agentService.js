@@ -125,6 +125,7 @@ class AgentService {
     onEvent,
     envVars,
     abortSignal,
+    agentId,
   ) {
     const requestBody = {
       code,
@@ -136,6 +137,10 @@ class AgentService {
       friendlyName,
       // ISSUE-008: per-agent env vars threaded to the runtime overlay
       envVars,
+      // Threaded through so the run registry can record which saved
+      // agent this run belongs to. The runs UI uses this for the
+      // /agent/<agentId>/runs/<runId> deep-link.
+      agentId,
     };
 
     const authHeaders = await this._getAuthHeaders();

@@ -175,8 +175,17 @@ const RunsPage = () => {
               <TableBody>
                 {filtered.map((run) => {
                   const cfg = STATUS_CHIP[run.status] || { label: run.status, color: 'default' };
+                  // Deep-link to the per-agent runs page when agentId is
+                  // available. Runs without one (sandbox / pre-field) get
+                  // a row with no click behavior.
+                  const linkTo = run.agentId ? `/agent/${run.agentId}/runs/${run.runId}` : null;
                   return (
-                    <TableRow key={run.runId} hover>
+                    <TableRow
+                      key={run.runId}
+                      hover
+                      sx={linkTo ? { cursor: 'pointer' } : undefined}
+                      onClick={linkTo ? () => navigate(linkTo) : undefined}
+                    >
                       <TableCell>
                         <Chip size="small" label={cfg.label} color={cfg.color} />
                       </TableCell>

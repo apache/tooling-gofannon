@@ -84,7 +84,7 @@ export default function RunningJobsModule() {
         <Button
           variant="outlined"
           size="small"
-          onClick={() => navigate('/runs')}
+          onClick={() => navigate('/jobs')}
           disabled={runs.length === 0}
         >
           View all
@@ -127,12 +127,23 @@ export default function RunningJobsModule() {
 
 function RunRow({ run }) {
   const cfg = STATUS_CHIP[run.status] || { label: run.status, color: 'default' };
+  // Deep-link to the per-agent runs page when we have an agentId. Runs
+  // that predate the agent_id field on RunRecord (or sandbox runs from
+  // the create-flow before a save) render the name as plain text rather
+  // than linking to a route that wouldn't resolve.
+  const linkTo = run.agentId ? `/agent/${run.agentId}/runs/${run.runId}` : null;
   return (
     <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, fontSize: '0.875rem' }}>
       <Chip size="small" label={cfg.label} color={cfg.color} />
-      <Link component={RouterLink} to={`/runs/${run.runId}`} sx={{ flex: 1, textDecoration: 'none' }}>
-        {run.agentName}
-      </Link>
+      {linkTo ? (
+        <Link component={RouterLink} to={linkTo} sx={{ flex: 1, textDecoration: 'none' }}>
+          {run.agentName}
+        </Link>
+      ) : (
+        <Typography sx={{ flex: 1, fontSize: '0.875rem', color: 'text.secondary' }}>
+          {run.agentName}
+        </Typography>
+      )}
       <Typography variant="caption" color="text.secondary">
         {formatTimeAgo(run.startedAt)}
       </Typography>

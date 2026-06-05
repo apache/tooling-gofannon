@@ -61,7 +61,11 @@ export const defaultRoutes = [
     element: <DataStoreBrowser />,
   },
   {
-    path: '/runs',
+    // SPA-visible URL for the all-runs index. NOT /runs -- that path
+    // collides with the API's /runs endpoint, which vite proxies to
+    // the backend before the SPA router can match. The data endpoints
+    // live at /runs/*; the user-facing page lives at /jobs.
+    path: '/jobs',
     element: <RunsPage />,
   },
   {

@@ -84,6 +84,10 @@ class RunRecord:
     run_id: str
     user_id: str
     agent_name: str
+    # CouchDB doc id of the saved agent this run came from, when applicable.
+    # None for runs initiated from the create-flow sandbox (no saved agent yet).
+    # Used by the runs UI to deep-link to the per-agent runs page.
+    agent_id: Optional[str] = None
     started_at: datetime = field(default_factory=naive_utc_now)
     status: Literal["running", "success", "error", "stopped"] = "running"
     trace: _FanoutTrace = field(default_factory=_FanoutTrace)
@@ -100,6 +104,7 @@ class RunRecord:
         """Subset suitable for list endpoints — no events, no result body."""
         return {
             "runId": self.run_id,
+            "agentId": self.agent_id,
             "agentName": self.agent_name,
             "status": self.status,
             "startedAt": self.started_at.isoformat(),
@@ -124,10 +129,21 @@ class RunRegistry:
         self._records: Dict[str, RunRecord] = {}
         self._lock = asyncio.Lock()
 
-    def new_record(self, *, user_id: str, agent_name: str) -> RunRecord:
+    def new_record(
+        self,
+        *,
+        user_id: str,
+        agent_name: str,
+        agent_id: Optional[str] = None,
+    ) -> RunRecord:
         """Create a record with a fresh run_id and register it."""
         run_id = str(uuid.uuid4())
-        record = RunRecord(run_id=run_id, user_id=user_id, agent_name=agent_name)
+        record = RunRecord(
+            run_id=run_id,
+            user_id=user_id,
+            agent_name=agent_name,
+            agent_id=agent_id,
+        )
         self._records[run_id] = record
         return record
 

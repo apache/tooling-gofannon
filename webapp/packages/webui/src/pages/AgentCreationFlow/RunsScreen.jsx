@@ -337,6 +337,7 @@ const RunsScreen = () => {
         onTraceEvent,
         agentData?.envVars,
         abort.signal,
+        agentId,
       );
       if (response.error) {
         setError(response.error);
