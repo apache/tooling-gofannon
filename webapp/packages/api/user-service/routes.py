@@ -809,6 +809,42 @@ async def run_agent_code_stream(
                 "Agent code executed successfully (streaming).",
                 metadata={"request": get_sanitized_request_data(req)},
             )
+        except asyncio.CancelledError:
+            # event_generator's finally cancels agent_task when the
+            # SSE stream closes mid-run (client disconnect, or the
+            # frontend's handleStop aborting the fetch). Without
+            # explicit handling here, CancelledError would skip past
+            # mark_complete and leave the registry record stuck at
+            # 'running' indefinitely -- this was the 'silent death'
+            # case where no traceback was logged and the run never
+            # got a final status.
+            #
+            # Treat the cancel as a stop: flip the token (if not
+            # already) so the agent thread terminates at its next
+            # structural boundary, then mark the registry stopped.
+            # Re-raise so upstream asyncio task accounting still
+            # treats this task as cancelled.
+            if not _cancel_token.is_stopped():
+                _cancel_token.request_stop()
+            try:
+                _registry.mark_complete(
+                    _run_record,
+                    status="stopped",
+                    error="Run cancelled (SSE stream closed)",
+                    ops_log=final.get("ops_log"),
+                )
+            except Exception:
+                logger.log(
+                    "ERROR", "run_registry_update_failed",
+                    f"mark_complete failed for run {_run_record.run_id}",
+                    metadata={"traceback": traceback.format_exc()},
+                )
+            logger.log(
+                "INFO", "sandbox_run_cancelled",
+                f"Streaming run cancelled (SSE closed) for run {_run_record.run_id}",
+                metadata={"request": get_sanitized_request_data(req)},
+            )
+            raise
         except (Exception, AgentStopped) as e:
             # AgentStopped now inherits from BaseException so user code
             # can't swallow it via except Exception; we have to name it
