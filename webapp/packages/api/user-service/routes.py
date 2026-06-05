@@ -722,13 +722,14 @@ async def run_agent_code_stream(
     # wiring possible.
     from services.run_registry import get_run_registry
     from services.run_cancel_registry import publish as register_cancel_token
-    from services.cancel_token import CancelToken, bind_token 
+    from services.cancel_token import CancelToken, bind_token, AgentStopped
 
     _registry = get_run_registry()
     _run_record = _registry.new_record(
         user_id=user.get("uid") or "anonymous",
         agent_name=request.friendly_name or "sandbox_agent",
         agent_id=request.agent_id,
+        input_dict=request.input_dict,
     )
     _cancel_token = CancelToken()
     register_cancel_token(_run_record.run_id, _cancel_token)
@@ -767,6 +768,16 @@ async def run_agent_code_stream(
             final["result"] = result
             final["schema_warnings"] = schema_warnings or None
             final["ops_log"] = ops_log or None
+            # Update the run registry so /runs and /runs/<id> reflect
+            # completion. Without this, every streaming run sits as
+            # 'running' until eviction at EVICTION_TTL_SECONDS (1 hour).
+            _registry.mark_complete(
+                _run_record,
+                status="success",
+                result=result,
+                schema_warnings=schema_warnings or None,
+                ops_log=ops_log or None,
+            )
             logger.log(
                 "INFO", "sandbox_run",
                 "Agent code executed successfully (streaming).",
@@ -774,6 +785,19 @@ async def run_agent_code_stream(
             )
         except Exception as e:
             final["error"] = f"{type(e).__name__}: {e}"
+            # Distinguish a user-initiated stop from a genuine error.
+            # AgentStopped is raised by check_should_stop() when the
+            # cancel token flips, propagated by the data store / LLM
+            # services. Also check the token directly in case the agent
+            # is doing pure-Python work between checks and the exception
+            # ends up wrapped.
+            is_stop = isinstance(e, AgentStopped) or _cancel_token.is_cancelled()
+            _registry.mark_complete(
+                _run_record,
+                status="stopped" if is_stop else "error",
+                error=f"{type(e).__name__}: {e}",
+                ops_log=final.get("ops_log"),
+            )
             logger.log(
                 "ERROR", "sandbox_run_failure",
                 f"Error running agent code (streaming, trace events: {len(trace.events)})",

@@ -1,6 +1,6 @@
 // webapp/packages/webui/src/components/RunningJobsModule.jsx
 //
-// ISSUE-006 — cross-agent view of "what's running" on the home page.
+// ISSUE-006 — cross-agent view of recent and current runs on the home page.
 // Polls GET /runs every 5s and renders each non-terminal run plus the
 // most recent N completed runs. Status chip color encodes terminal
 // state.
@@ -77,7 +77,7 @@ export default function RunningJobsModule() {
       }}>
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
           <PendingActionsIcon sx={{ fontSize: 20, color: 'text.secondary' }} />
-          <Typography variant="h6" sx={{ fontWeight: 600, fontSize: '1rem' }}>Running Jobs</Typography>
+          <Typography variant="h6" sx={{ fontWeight: 600, fontSize: '1rem' }}>Runs</Typography>
           <Chip label={`All (${runs.length})`} size="small" sx={{ height: 22, fontSize: '0.72rem' }} />
           {loading && <CircularProgress size={14} sx={{ ml: 1 }} />}
         </Box>

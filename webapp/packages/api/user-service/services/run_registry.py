@@ -88,6 +88,10 @@ class RunRecord:
     # None for runs initiated from the create-flow sandbox (no saved agent yet).
     # Used by the runs UI to deep-link to the per-agent runs page.
     agent_id: Optional[str] = None
+    # The input dict the run was launched with. Stored so the runs UI
+    # can pre-fill the form when revisiting a past run via deep link.
+    # None for old records that predate this field.
+    input_dict: Optional[Dict[str, Any]] = None
     started_at: datetime = field(default_factory=naive_utc_now)
     status: Literal["running", "success", "error", "stopped"] = "running"
     trace: _FanoutTrace = field(default_factory=_FanoutTrace)
@@ -119,6 +123,10 @@ class RunRecord:
             "error": self.error,
             "schemaWarnings": self.schema_warnings,
             "opsLog": self.ops_log,
+            # inputDict echoes the input the run was launched with so
+            # the runs UI can pre-fill its form when a user revisits a
+            # past run via deep link.
+            "inputDict": self.input_dict,
         }
 
 
@@ -135,6 +143,7 @@ class RunRegistry:
         user_id: str,
         agent_name: str,
         agent_id: Optional[str] = None,
+        input_dict: Optional[Dict[str, Any]] = None,
     ) -> RunRecord:
         """Create a record with a fresh run_id and register it."""
         run_id = str(uuid.uuid4())
@@ -143,6 +152,7 @@ class RunRegistry:
             user_id=user_id,
             agent_name=agent_name,
             agent_id=agent_id,
+            input_dict=input_dict,
         )
         self._records[run_id] = record
         return record

@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useAgentFlow } from './AgentCreationFlowContextValue';
 import agentService from '../../services/agentService';
+import runService from '../../services/runService';
 import {
   Box,
   Typography,
@@ -177,6 +178,11 @@ const RunsScreen = () => {
   // duration_ms, outcome ('success'|'error'|'running'), events: [...] }.
   // Newest is appended; the component reverses for display.
   const [runs, setRuns] = useState([]);
+  // When arriving via /agent/<id>/runs/<runId> deep link, the run isn't
+  // in local `runs` state (which only accumulates during this session),
+  // so fetch it from the registry to pre-fill the form. null until
+  // resolved; set to the fetched record on success or null on failure.
+  const [fetchedRun, setFetchedRun] = useState(null);
 
   // Read the declared output schema so we can send it to the agent runtime for
   // validation. Falls back to null when unavailable — the backend treats
@@ -192,6 +198,28 @@ const RunsScreen = () => {
 
   // Initialize formData when inputSchema changes. If we have a
   // most-recent run (or are viewing a specific historical run via
+  // Fetch the run-record when we landed here via a deep link and
+  // don't already have a matching local run. The registry endpoint
+  // (/runs/<id>) returns inputDict, which we use below to seed the
+  // form. Failures degrade gracefully: form just shows defaults.
+  useEffect(() => {
+    let cancelled = false;
+    if (!runId) { setFetchedRun(null); return; }
+    if (runs.some((r) => r.run_id === runId)) { setFetchedRun(null); return; }
+    (async () => {
+      try {
+        const data = await runService.getRun(runId);
+        if (!cancelled) setFetchedRun(data || null);
+      } catch (e) {
+        if (!cancelled) {
+          console.warn('RunsScreen: getRun failed:', e?.message || e);
+          setFetchedRun(null);
+        }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [runId, runs]);
+
   // runId in the URL), pre-fill with that run's input values so
   // 'tweak and re-run' is one click.
   useEffect(() => {
@@ -205,9 +233,16 @@ const RunsScreen = () => {
 
     // Pick the source run for pre-fill: an explicit runId from the URL
     // wins; otherwise fall back to the most-recent run in local state.
+    // For the deep-link case (runId in URL but no matching local run),
+    // fetchedRun carries the registry record -- normalize its inputDict
+    // to the local-state `input` shape so the rest of this block stays
+    // simple.
     let sourceRun = null;
     if (runId) {
       sourceRun = runs.find((r) => r.run_id === runId) || null;
+      if (!sourceRun && fetchedRun?.inputDict) {
+        sourceRun = { input: fetchedRun.inputDict };
+      }
     } else if (runs.length > 0) {
       sourceRun = runs[runs.length - 1];
     }
@@ -239,8 +274,10 @@ const RunsScreen = () => {
     // runs only matters on mount/route-change; we don't want to keep
     // resetting the form mid-edit when a new run is appended. So we
     // intentionally exclude runs from deps after the initial fill.
+    // fetchedRun is included so the form re-fills when an async getRun
+    // resolves after the initial render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [inputSchema, runId]);
+  }, [inputSchema, runId, fetchedRun]);
 
   const handleInputChange = (key, value) => {
     setFormData(prev => ({ ...prev, [key]: value }));
@@ -683,13 +720,16 @@ const RunsScreen = () => {
       <Box sx={{ display: 'flex', alignItems: 'center', mb: 2 }}>
         <IconButton
           size="small"
-          onClick={() => {
-            if (runId) {
-              navigate(`/agent/${agentId}/runs`);
-            } else {
-              navigate(-1);
-            }
-          }}
+          // Always go back in browser history. The previous logic
+          // special-cased the runId case by navigating to
+          // /agent/<id>/runs (no runId), which created a duplicate-
+          // looking page and a navigation loop -- back from there
+          // went forward in history to the same /<id>/runs/<runId>
+          // we'd just left. navigate(-1) restores the natural
+          // 'return to where I came from' behavior; users opening
+          // the URL in a fresh tab can use the app's top nav to
+          // reach home.
+          onClick={() => navigate(-1)}
           sx={{ mr: 1 }}
         >
           <ArrowBackIcon sx={{ fontSize: 20 }} />
