@@ -55,6 +55,17 @@ WORKER_ID = uuid.uuid4().hex
 # right after completion) don't re-fetch.
 LOCAL_CACHE_TTL_SECONDS = 300  # 5 minutes
 
+# Backwards-compat alias for the constant the pre-persistence code
+# called EVICTION_TTL_SECONDS. The name was specific to the old
+# meaning -- a single in-memory eviction TTL of 1 hour -- which now
+# split into LOCAL_CACHE_TTL_SECONDS (in-memory cache evict) and
+# COUCH_RETENTION_SECONDS (CouchDB eviction). External callers
+# (notably tests/unit/services/test_run_registry.py) imported the
+# old name; keep it pointing at the local cache TTL so existing
+# call sites that backdate _completed_at_monotonic past this value
+# still trigger eviction the way they expect.
+EVICTION_TTL_SECONDS = LOCAL_CACHE_TTL_SECONDS
+
 # CouchDB retention for completed runs. Runs older than this get
 # evicted by the periodic eviction task in app_factory's lifespan.
 COUCH_RETENTION_SECONDS = 7 * 24 * 3600  # 7 days
