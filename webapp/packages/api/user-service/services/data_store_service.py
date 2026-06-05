@@ -425,6 +425,31 @@ class DataStoreService:
         return sum(1 for r in results if r.get("ok"))
 
 
+    def delete_many(
+        self,
+        user_id: str,
+        namespace: str,
+        keys: List[str],
+    ) -> int:
+        check_should_stop()  # ISSUE-007
+        """Delete multiple keys at once via the backend's bulk primitive.
+
+        One get_many() to fetch existing _revs, then one _bulk_docs
+        call with delete markers. Two HTTP round trips regardless of
+        N, vs. the per-key loop which was up to 3N (exists + get +
+        delete) HTTP calls.
+
+        Returns the count of keys successfully deleted. Missing keys
+        are treated as already-deleted (idempotent), counted as
+        successful.
+        """
+        if not keys:
+            return 0
+        doc_ids = [self._make_doc_id(user_id, namespace, key) for key in keys]
+        results = self.db.delete_many(DATA_STORE_DB, doc_ids)
+        return sum(1 for r in results if r.get("ok"))
+
+
 class AgentDataStoreProxy:
     """
     Proxy class injected into agent execution context.
@@ -528,6 +553,18 @@ class AgentDataStoreProxy:
         result = self._service.delete(self._user_id, self._namespace, key)
         self._log("delete", key=key, found=result)
         return result
+
+    def delete_many(self, keys: List[str]) -> int:
+        """Delete multiple keys at once via the backend's bulk primitive.
+
+        Use this instead of looping over delete() when you have a
+        list of keys to remove (e.g. orphan cleanup after a partial
+        rerun). One bulk call regardless of N. For wiping the whole
+        namespace, use clear() instead -- it's even simpler.
+        """
+        count = self._service.delete_many(self._user_id, self._namespace, list(keys))
+        self._log("delete_many", count=count, keys=list(keys)[:10])
+        return count
 
     def list_keys(self, prefix: Optional[str] = None) -> List[str]:
         """List all keys, optionally filtered by prefix."""
