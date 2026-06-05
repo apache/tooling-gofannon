@@ -49,6 +49,14 @@ from time_utils import naive_utc_now
 # concerned, since the in-memory token dict is gone.
 WORKER_ID = uuid.uuid4().hex
 
+# Test-mode flag: when reset_run_registry_for_tests is called, this
+# flips to True for the rest of the process lifetime. Any RunRegistry
+# constructed while it's True skips the DB lookup in _get_db and
+# operates purely in-memory. Lets unit tests exercise the registry
+# without standing up CouchDB and without test records contaminating
+# a real DB.
+_test_mode_no_db = False
+
 # Local in-memory cache TTL for completed records. The CouchDB
 # record is the source of truth for completed runs; we keep a brief
 # local cache so back-to-back reads (typical when a UI page renders
@@ -345,6 +353,12 @@ class RunRegistry:
         # Lazy DB binding; set on first persistence operation when
         # the caller has access to settings. Tests can pass None.
         self._db = db
+        # Test-mode short-circuit: if the test fixture flipped the
+        # module flag, never try to look up a DB. Lets unit tests
+        # exercise the in-memory path even now that the production
+        # 'from config import settings' import actually succeeds in
+        # the test environment.
+        self._db_disabled = (db is None) and _test_mode_no_db
         # Track which run_ids were stop-flipped locally so the polling
         # task doesn't re-flip and so we can stop polling them.
         self._stop_flipped: set = set()
@@ -353,10 +367,12 @@ class RunRegistry:
 
     def _get_db(self):
         """Return the DatabaseService, lazily initializing on first use."""
+        if self._db_disabled:
+            return None
         if self._db is not None:
             return self._db
         try:
-            from config.settings import settings
+            from config import settings
             from services.database_service import get_database_service
             self._db = get_database_service(settings)
             _ensure_indexes(self._db)
@@ -676,6 +692,13 @@ def get_run_registry() -> RunRegistry:
 
 
 def reset_run_registry_for_tests() -> None:
-    """Tests-only — discard the singleton."""
-    global _registry
+    """Tests-only — discard the singleton AND opt this process out of
+    CouchDB persistence for the remainder of its lifetime.
+
+    The opt-out is sticky: once any test in the process calls this,
+    no subsequent RunRegistry() instance will try to talk to CouchDB.
+    Lets unit tests run without standing up a real DB and prevents
+    test runs from polluting a shared CouchDB instance."""
+    global _registry, _test_mode_no_db
     _registry = None
+    _test_mode_no_db = True
