@@ -1165,25 +1165,23 @@ async def stop_run(
     Authorization: only the run's owner may stop it. After ISSUE-002
     lands, widen to workspace membership.
     """
-    from services.run_cancel_registry import get as get_token
-    # When ISSUE-003 is present we also check ownership against
-    # RunRegistry; absent that, the cancel registry alone is the source
-    # of truth (an unknown run_id 404s either way).
-    token = get_token(run_id)
-    if token is None:
+    # ISSUE-007 cross-worker stop: the registry's request_stop
+    # method handles both the local-token-flip fast path (when this
+    # worker happens to own the run) and the CouchDB stop_requested
+    # write that the owning worker's polling task picks up.
+    from services.run_registry import get_run_registry
+    outcome = get_run_registry().request_stop(run_id, user.get("uid") or "")
+    if outcome == "not_found":
         raise HTTPException(status_code=404, detail="Run not found or already complete")
-
-    try:
-        from services.run_registry import get_run_registry
-        record = get_run_registry().get(run_id)
-        if record is not None and record.user_id != user.get("uid"):
-            raise HTTPException(status_code=404, detail="Run not found")
-    except ImportError:
-        # ISSUE-003 not yet applied; rely on cancel registry alone.
-        pass
-
-    token.request_stop()
-    return {"runId": run_id, "status": "stopping"}
+    if outcome == "forbidden":
+        # Match the pre-persistence behavior: don't leak existence of
+        # other users' runs via a 403.
+        raise HTTPException(status_code=404, detail="Run not found")
+    # outcome is one of 'flipped_local' or 'persisted_remote'. Both
+    # are success cases. The status text gives clients a hint about
+    # whether the stop will be immediate (local) or has a small
+    # polling-window latency (remote).
+    return {"runId": run_id, "status": "stopping", "via": outcome}
 
 
 @router.post("/agents/run-code", response_model=RunCodeResponse)
