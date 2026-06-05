@@ -415,6 +415,15 @@ const RunsScreen = () => {
         // so the Stop button becomes enabled.
         if (event && event.type === 'run_id' && event.data && event.data.runId) {
           setCurrentRunId(event.data.runId);
+          // Trigger a historicalRuns refetch so the just-registered
+          // run shows up in the past-runs section immediately. The
+          // backend has the record by the time this event fires
+          // (new_record completes before the run_id event is sent).
+          // Without this bump, the past-runs list stays stale for the
+          // duration of the run and the user has no visible feedback
+          // that the run is in flight when they're on /agent/<id>/runs
+          // without a runId in the URL.
+          setCompletionTick((n) => n + 1);
           return;
         }
         setRuns((prev) => {
