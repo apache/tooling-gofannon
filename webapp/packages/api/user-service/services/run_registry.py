@@ -386,14 +386,33 @@ class RunRegistry:
     def _persist(self, record: RunRecord, include_events: bool = False) -> None:
         """Write the record to CouchDB. Best-effort -- logs and continues
         on failure rather than breaking the in-memory flow that handles
-        the actual run."""
+        the actual run.
+
+        CouchDB requires _rev for updates. The save() in this codebase
+        does NOT auto-resolve revs (per the comment in CouchDBService
+        .save: "Caller is responsible for providing _rev when updating
+        an existing document"), so we do a get() first to pick up the
+        current _rev. New docs (first persist for a fresh run_id)
+        skip the _rev step -- the get returns None and we save
+        without _rev, which CouchDB accepts for inserts. Each update
+        therefore costs one extra HTTP round-trip; acceptable since
+        run records aren't written hot (create, complete, and the
+        occasional stop_requested flip)."""
         db = self._get_db()
         if db is None:
             return
         try:
             doc = record.to_couch_doc(include_events=include_events)
-            # CouchDB rev handling: save() reads the existing doc to
-            # preserve _rev on update. database_service abstracts this.
+            try:
+                existing = db.get(RUN_REGISTRY_DB, record.run_id)
+                if existing and existing.get("_rev"):
+                    doc["_rev"] = existing["_rev"]
+            except Exception:
+                # Doc doesn't exist (or get failed transiently);
+                # proceed without _rev. CouchDB treats a save with
+                # no _rev as an insert; if the doc actually exists
+                # we'll get a 409 below and log it.
+                pass
             db.save(RUN_REGISTRY_DB, record.run_id, doc)
         except Exception as e:
             # Defensive: persistence failure mustn't break run-time
