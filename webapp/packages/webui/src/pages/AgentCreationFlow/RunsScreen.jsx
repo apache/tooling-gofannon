@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useAgentFlow } from './AgentCreationFlowContextValue';
 import agentService from '../../services/agentService';
@@ -210,10 +210,21 @@ const RunsScreen = () => {
   // don't already have a matching local run. The registry endpoint
   // (/runs/<id>) returns inputDict, which we use below to seed the
   // form. Failures degrade gracefully: form just shows defaults.
+  // Memoize the local-match check so the effect below depends on
+  // a stable boolean instead of the full runs array. The SSE trace
+  // event handler updates runs as a new array reference on every
+  // event (often 1000+ per agent run); with runs in the effect's
+  // deps the effect refired on every event and produced a fetch
+  // storm against GET /runs/<id>, which on a deep-linked ghost
+  // runId showed up as hundreds of 404s per second in the api log.
+  const hasLocalRunMatch = useMemo(
+    () => runs.some((r) => r.run_id === runId),
+    [runs, runId]
+  );
   useEffect(() => {
     let cancelled = false;
     if (!runId) { setFetchedRun(null); return; }
-    if (runs.some((r) => r.run_id === runId)) { setFetchedRun(null); return; }
+    if (hasLocalRunMatch) { setFetchedRun(null); return; }
     (async () => {
       try {
         const data = await runService.getRun(runId);
@@ -226,7 +237,7 @@ const RunsScreen = () => {
       }
     })();
     return () => { cancelled = true; };
-  }, [runId, runs, completionTick]);
+  }, [runId, hasLocalRunMatch, completionTick]);
 
   // Load the past-runs list from the run registry, filtered to this
   // agent. Refetches when completionTick bumps (after a streaming run
