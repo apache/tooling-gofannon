@@ -133,3 +133,40 @@ async def test_stop_interrupts_mid_await():
     assert elapsed < 1.5, (
         f"stop should take effect mid-await; took {elapsed:.2f}s"
     )
+
+
+@pytest.mark.asyncio
+async def test_agent_stopped_escapes_except_exception():
+    """Regression: agents' broad `except Exception as e: log; continue`
+    patterns must not swallow AgentStopped. The asvs_orchestrate agent
+    in particular wraps an ASVS-load call in try/except Exception; with
+    AgentStopped as Exception the agent caught it, logged a warning per
+    chapter, dropped sections it couldn't classify, and rolled through
+    to a useless 0-section output instead of stopping. Making
+    AgentStopped a BaseException (mirroring asyncio.CancelledError's
+    Python 3.8 reparenting) makes broad except clauses pass it through."""
+    from services.cancel_token import (
+        AgentStopped, CancelToken, bind_token, check_should_stop,
+    )
+
+    cancel = CancelToken()
+
+    async def agent_with_broad_except():
+        bind_token(cancel)
+        survivors = 0
+        for _ in range(5):
+            try:
+                check_should_stop()
+                survivors += 1
+            except Exception:  # the asvs_* pattern
+                survivors += 100  # marker: if this fires, test fails
+        return survivors
+
+    # Sanity: with bit not set, agent runs 5 iters normally.
+    assert await agent_with_broad_except() == 5
+
+    # Flip the bit. AgentStopped should escape the except Exception
+    # and abort the agent.
+    cancel.request_stop()
+    with pytest.raises(AgentStopped):
+        await agent_with_broad_except()

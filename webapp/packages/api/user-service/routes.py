@@ -809,7 +809,12 @@ async def run_agent_code_stream(
                 "Agent code executed successfully (streaming).",
                 metadata={"request": get_sanitized_request_data(req)},
             )
-        except Exception as e:
+        except (Exception, AgentStopped) as e:
+            # AgentStopped now inherits from BaseException so user code
+            # can't swallow it via except Exception; we have to name it
+            # explicitly here to keep our cleanup-and-mark-complete
+            # handler covering it. Same handler logic for error and
+            # stop cases below.
             final["error"] = f"{type(e).__name__}: {e}"
             # Distinguish a user-initiated stop from a genuine error.
             # AgentStopped is raised by check_should_stop() when the
