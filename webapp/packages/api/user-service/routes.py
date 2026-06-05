@@ -712,7 +712,12 @@ async def run_agent_code_stream(
     # is the real bound.
     trace = Trace()
     queue: asyncio.Queue = asyncio.Queue()
-    trace.attach_queue(queue)
+    # Pass the current loop into attach_queue so the agent\'s
+    # side-thread (Path A executor) can emit events into this queue
+    # via threadsafe routing. Without the loop arg, _publish would
+    # call put_nowait directly from the agent thread and corrupt
+    # the queue\'s asyncio waiters.
+    trace.attach_queue(queue, loop=asyncio.get_running_loop())
 
     # Register this run with the registry + cancel registry so the client 
     # can address it for stop. Stream's runId is emitted as the first SSE event 
@@ -723,6 +728,7 @@ async def run_agent_code_stream(
     from services.run_registry import get_run_registry
     from services.run_cancel_registry import publish as register_cancel_token
     from services.cancel_token import CancelToken, bind_token, AgentStopped
+    from services.agent_executor import execute_in_thread
 
     _registry = get_run_registry()
     _run_record = _registry.new_record(
@@ -745,18 +751,31 @@ async def run_agent_code_stream(
 
     async def run_agent_task():
         try:
-            result, ops_log = await _execute_agent_code(
-                code=request.code,
-                input_dict=request.input_dict,
-                tools=request.tools,
-                gofannon_agents=request.gofannon_agents,
-                db=db,
-                llm_settings=request.llm_settings,
-                user_id=user.get("uid"),
-                user_basic_info=user_basic_info,
-                agent_name=request.friendly_name or "sandbox_agent",
-                trace=trace,
-                env_vars=request.env_vars,
+            # Path A: run the agent in a separate OS thread with its
+            # own event loop. This keeps THIS worker\'s loop free to
+            # serve other requests while the agent does sync CouchDB
+            # calls. The factory shape (lambda returning a coro) is
+            # what executor.execute_in_thread expects -- the coro
+            # has to be instantiated inside the target thread to bind
+            # to the right loop.
+            def _build_agent_coro():
+                return _execute_agent_code(
+                    code=request.code,
+                    input_dict=request.input_dict,
+                    tools=request.tools,
+                    gofannon_agents=request.gofannon_agents,
+                    db=db,
+                    llm_settings=request.llm_settings,
+                    user_id=user.get("uid"),
+                    user_basic_info=user_basic_info,
+                    agent_name=request.friendly_name or "sandbox_agent",
+                    trace=trace,
+                    env_vars=request.env_vars,
+                )
+            result, ops_log = await execute_in_thread(
+                _build_agent_coro,
+                _cancel_token,
+                thread_name=f"agent-{_run_record.run_id[:8]}",
             )
             schema_warnings = validate_output_against_schema(result, request.output_schema)
             if schema_warnings:
@@ -1019,7 +1038,7 @@ async def stream_run(run_id: str, user: dict = Depends(get_current_user)):
         raise HTTPException(status_code=404, detail="Run not found")
 
     queue: asyncio.Queue = asyncio.Queue()
-    record.trace.add_subscriber(queue)
+    record.trace.add_subscriber(queue, loop=asyncio.get_running_loop())
 
     async def event_generator():
         # 1. Emit the run_id as the first frame so clients can correlate.

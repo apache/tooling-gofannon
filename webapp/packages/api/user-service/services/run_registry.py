@@ -52,29 +52,55 @@ class _FanoutTrace(Trace):
     ``self.events`` list replayed before going live. Each subscriber's
     own queue is set via ``add_subscriber``; removal via
     ``remove_subscriber``.
+
+    Path A integration: each subscriber tracks the loop that owns its
+    queue. When append() fires from a thread other than the queue\'s
+    owning loop (the executor runs the agent on a side thread), the
+    put_nowait is routed through call_soon_threadsafe so the queue is
+    only mutated by its owning loop. When no loop is provided
+    (legacy callers), behavior is the original direct put_nowait.
     """
 
     def __init__(self) -> None:
         super().__init__()
-        self._subscribers: Set[asyncio.Queue] = set()
+        # subscriber → optional owning_loop. None means "emit from any
+        # thread without bridging" (the legacy code path before
+        # Path A).
+        self._subscribers: Dict[asyncio.Queue, Optional[asyncio.AbstractEventLoop]] = {}
 
-    def add_subscriber(self, queue: asyncio.Queue) -> None:
-        self._subscribers.add(queue)
+    def add_subscriber(
+        self,
+        queue: asyncio.Queue,
+        loop: Optional[asyncio.AbstractEventLoop] = None,
+    ) -> None:
+        self._subscribers[queue] = loop
 
     def remove_subscriber(self, queue: asyncio.Queue) -> None:
-        self._subscribers.discard(queue)
+        self._subscribers.pop(queue, None)
 
     def append(self, event: Dict[str, Any]) -> None:
         # Append to the immutable history first (parent stores in
         # self.events), then fan out to subscribers.
         super().append(event)
-        for q in list(self._subscribers):
-            try:
-                q.put_nowait(event)
-            except Exception:
-                # Subscriber's queue is full or closed; drop the event
-                # for that subscriber rather than blocking emitters.
-                pass
+        for q, loop in list(self._subscribers.items()):
+            if loop is not None:
+                # Route the put via the queue\'s owning loop. Safe
+                # even when we\'re already on that loop\'s thread.
+                loop.call_soon_threadsafe(self._safe_subscriber_put, q, event)
+            else:
+                try:
+                    q.put_nowait(event)
+                except Exception:
+                    # Queue full or closed; drop the event for that
+                    # subscriber rather than blocking other emitters.
+                    pass
+
+    @staticmethod
+    def _safe_subscriber_put(queue: asyncio.Queue, event: Dict[str, Any]) -> None:
+        try:
+            queue.put_nowait(event)
+        except Exception:
+            pass
 
 
 @dataclass
