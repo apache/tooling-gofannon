@@ -129,6 +129,33 @@ async def execute_in_thread(
             # entry hasn\'t evicted yet) doesn\'t fire into a closed
             # loop.
             cancel_token.set_on_stop(None)
+            # Drain pending background tasks before closing the loop.
+            # Litellm spins up an internal LoggingWorker coroutine
+            # that owns a queue and a long-running task on whatever
+            # loop is current when the first litellm call happens.
+            # In Path A that's this thread's loop. If we close the
+            # loop while the worker is still alive, its next
+            # call_soon (asyncio.Queue.get's getter.cancel path) hits
+            # a closed loop and raises 'RuntimeError: Event loop is
+            # closed', which Python surfaces as 'Exception ignored
+            # in: <coroutine object LoggingWorker._worker_loop>'.
+            # Harmless but noisy in the api logs.
+            #
+            # Cancel any task still around, give the loop one tick
+            # to process the cancellations, then close cleanly.
+            try:
+                pending = [t for t in asyncio.all_tasks(thread_loop)
+                           if not t.done()]
+                for t in pending:
+                    t.cancel()
+                if pending:
+                    thread_loop.run_until_complete(
+                        asyncio.gather(*pending, return_exceptions=True)
+                    )
+            except Exception:
+                # Best-effort drain; if it raises we still want to
+                # close the loop below rather than leak it.
+                pass
             try:
                 thread_loop.close()
             except Exception:
