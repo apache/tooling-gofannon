@@ -20,6 +20,17 @@ from time_utils import naive_utc_now
 
 # --- Abstract Base Class for Providers ---
 
+# Ordering used to compare log levels for filtering. Higher value = more
+# severe. Anything below a provider's configured threshold is dropped at
+# the provider boundary, so call sites can keep logging at whatever
+# level is semantically right and operators can dial console verbosity
+# via env without code changes.
+_LEVEL_RANK = {"DEBUG": 10, "INFO": 20, "WARN": 30, "WARNING": 30, "ERROR": 40}
+
+def _level_rank(level: str) -> int:
+    return _LEVEL_RANK.get((level or "INFO").upper(), _LEVEL_RANK["INFO"])
+
+
 class LogProvider(abc.ABC):
     """Abstract base class for a logging provider."""
     @abc.abstractmethod
@@ -117,9 +128,17 @@ class AWSCloudWatchLogsProvider(LogProvider):
 class ConsoleProvider(LogProvider):
     """Logs to the console. Used for local development."""
     def __init__(self):
-        print("Console logging provider initialized.")
+        # OBSERVABILITY_CONSOLE_LEVEL controls verbosity of console
+        # output. Default INFO drops DEBUG entries (notably per-request
+        # lifecycle noise from successful 2xx responses). Set to DEBUG
+        # to see everything when actively diagnosing.
+        env_level = os.environ.get("OBSERVABILITY_CONSOLE_LEVEL", "INFO").upper()
+        self._min_rank = _level_rank(env_level)
+        print(f"Console logging provider initialized (min level: {env_level}).")
 
     async def log(self, payload: Dict[str, Any]):
+        if _level_rank(payload.get("level", "INFO")) < self._min_rank:
+            return
         print(f"LOG: {json.dumps(payload, indent=2, default=str)}")
 
 # --- Main Observability Service ---
@@ -317,11 +336,26 @@ class ObservabilityMiddleware(BaseHTTPMiddleware):
             
             user_id = get_request_user_id(request)
 
+            # Pick log level by response status so 2xx noise can be
+            # filtered at the console while 4xx/5xx stay visible. The
+            # provider decides whether to actually emit based on its
+            # threshold; the level here just classifies the event.
+            sc = response.status_code
+            if sc < 300:
+                req_level = "DEBUG"
+            elif sc < 400:
+                req_level = "INFO"
+            elif sc < 500:
+                req_level = "WARN"
+            else:
+                req_level = "ERROR"
+
             observability_service.log(
                 event_type="api_request_start",
                 message=f"API request started: {request.method} {request.url.path}",
                 metadata=request_data,
                 user_id=user_id,
+                level=req_level,
             )
 
             response_data = {
@@ -334,6 +368,7 @@ class ObservabilityMiddleware(BaseHTTPMiddleware):
                 message=f"API request finished: {response.status_code}",
                 metadata=response_data,
                 user_id=user_id,
+                level=req_level,
             )
             return response
             
