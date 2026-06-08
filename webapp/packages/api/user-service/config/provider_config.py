@@ -1,5 +1,6 @@
 from .anthropic import models as anthropic_models
 from .bedrock import models as bedrock_models
+from .bedrock_mythos import models as bedrock_mythos_models
 from .gemini import models as gemini_models
 from .openai import models as openai_models
 from .openrouter import models as openrouter_models
@@ -24,6 +25,27 @@ PROVIDER_CONFIG = {
     "bedrock": {
         "api_key_env_var": "AWS_BEARER_TOKEN_BEDROCK",
         "models": bedrock_models
+    },
+    # Mythos preview — Bedrock Mantle endpoint in Anthropic's preview
+    # AWS account, accessed via cross-account STS AssumeRole + a SigV4-
+    # derived bearer token. No static credentials anywhere; the bearer
+    # token is minted from short-lived assumed-role credentials at
+    # request time, then passed to litellm as api_key. The region is
+    # also injected so litellm constructs the right Mantle endpoint
+    # URL (bedrock-mantle.{region}.api.aws/v1) — without it litellm
+    # defaults to us-east-1.
+    #
+    # Config knobs:
+    #   aws_region              — region where Mythos is provisioned
+    #   assume_role_arn         — cross-account devs role to assume
+    #   litellm_provider_prefix — built as "bedrock_mantle/<model-id>"
+    #                             so litellm routes through its Mantle
+    #                             provider (OpenAI-compatible endpoint)
+    "bedrock-mythos": {
+        "aws_region": "ap-southeast-4",
+        "assume_role_arn": "arn:aws:iam::861792231409:role/bedrock-devs",
+        "litellm_provider_prefix": "bedrock_mantle",
+        "models": bedrock_mythos_models,
     },
     "openrouter": {
         "api_key_env_var": "OPENROUTER_API_KEY",

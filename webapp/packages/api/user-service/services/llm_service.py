@@ -4,6 +4,11 @@ import os
 import random
 from config import settings
 from config.provider_config import PROVIDER_CONFIG
+# boto3 and aws-bedrock-token-generator are imported lazily inside
+# _get_bedrock_mythos_api_key to avoid forcing those deps onto module
+# load when the bedrock-mythos provider isn't configured. boto3 is
+# already transitively present via storage_service / dynamodb /
+# observability_service.
 from services.database_service import get_database_service
 from services.user_service import get_user_service
 from typing import Any, AsyncGenerator, Dict, List, Tuple, Optional
@@ -68,6 +73,70 @@ def _is_opus_4_7_or_later(model: str) -> bool:
     return any(tag in model for tag in ("claude-opus-4-7", "claude-opus-4-8"))
 
 
+# In-process cache of Mantle bearer tokens, keyed by role ARN.
+# STS AssumeRole defaults to 1-hour sessions and bearer-token validity
+# is bounded by the credentials' lifetime, so we refresh ~5 min before
+# expiry to avoid mid-request expiration.
+_BEDROCK_MYTHOS_TOKEN_CACHE: Dict[str, Dict[str, Any]] = {}
+_TOKEN_REFRESH_MARGIN_SECONDS = 300
+
+
+def _get_bedrock_mythos_api_key(
+    assume_role_arn: str,
+    region: str,
+) -> str:
+    """Return a Mantle bearer token for the bedrock-mythos provider.
+
+    Performs an STS AssumeRole into the cross-account devs role in
+    Anthropic's preview AWS account, then derives a SigV4 bearer token
+    from those short-lived credentials. The bearer token is what
+    litellm passes to the bedrock-mantle endpoint as the Authorization
+    header.
+
+    Cached in-process per role ARN; refreshes when within
+    `_TOKEN_REFRESH_MARGIN_SECONDS` of credentials expiry.
+
+    Returns the bearer token string, suitable for passing to litellm
+    as the api_key kwarg on a bedrock_mantle/* request.
+    """
+    import boto3
+    from botocore.credentials import Credentials
+    from aws_bedrock_token_generator import BedrockTokenGenerator
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc)
+    cached = _BEDROCK_MYTHOS_TOKEN_CACHE.get(assume_role_arn)
+    if cached:
+        if (cached["_expires_at"] - now).total_seconds() > _TOKEN_REFRESH_MARGIN_SECONDS:
+            return cached["token"]
+
+    # Assume the cross-account role using whatever credentials are
+    # ambient (EC2 instance profile in prod, aws login locally).
+    sts = boto3.client("sts")
+    response = sts.assume_role(
+        RoleArn=assume_role_arn,
+        RoleSessionName="gofannon-bedrock-mythos",
+    )
+    raw = response["Credentials"]
+
+    # Wrap the assumed credentials as a botocore Credentials object
+    # so we can pass them explicitly to BedrockTokenGenerator without
+    # mutating environment variables (which would not be thread-safe
+    # under the asyncio worker pool).
+    creds = Credentials(
+        access_key=raw["AccessKeyId"],
+        secret_key=raw["SecretAccessKey"],
+        token=raw["SessionToken"],
+    )
+    token = BedrockTokenGenerator().get_token(creds, region=region)
+
+    _BEDROCK_MYTHOS_TOKEN_CACHE[assume_role_arn] = {
+        "token": token,
+        "_expires_at": raw["Expiration"],
+    }
+    return token
+
+
 async def call_llm(
     provider: str,
     model: str,
@@ -90,7 +159,13 @@ async def call_llm(
     model_config = PROVIDER_CONFIG.get(provider, {}).get("models", {}).get(model, {})
     api_style = model_config.get("api_style")
 
-    model_string = f"{provider}/{model}"
+    # If the provider config supplies an explicit litellm prefix (e.g.
+    # bedrock-mythos -> "bedrock_mantle"), use it so litellm routes
+    # through its native handler for that backend. Defaults to the
+    # gofannon provider key for backwards compatibility.
+    provider_cfg = PROVIDER_CONFIG.get(provider, {})
+    litellm_prefix = provider_cfg.get("litellm_provider_prefix", provider)
+    model_string = f"{litellm_prefix}/{model}"
     
     thoughts = None
     content = ""
@@ -128,6 +203,21 @@ async def call_llm(
     # If no user-specific key, litellm will use environment variables
     if api_key:
         kwargs["api_key"] = api_key
+
+    # bedrock-mythos: mint a short-lived Mantle bearer token at
+    # request time, pass it to litellm as api_key. Also pass the
+    # region — litellm uses it to construct the Mantle endpoint URL
+    # (bedrock-mantle.{region}.api.aws/v1); without it litellm
+    # defaults to us-east-1 which doesn't host Mythos.
+    # The bearer token overrides any user-specific key above since
+    # bedrock-mythos auth is account-scoped, not per-user. See
+    # _get_bedrock_mythos_api_key().
+    if provider_cfg.get("assume_role_arn"):
+        kwargs["api_key"] = _get_bedrock_mythos_api_key(
+            assume_role_arn=provider_cfg["assume_role_arn"],
+            region=provider_cfg["aws_region"],
+        )
+        kwargs["aws_region_name"] = provider_cfg["aws_region"]
 
 
     # Only use aresponses API when we actually need its features (tools or reasoning)
@@ -511,7 +601,13 @@ async def stream_llm(
 
     Note: Cost tracking is not available for streaming responses.
     """
-    model_string = f"{provider}/{model}"
+    # If the provider config supplies an explicit litellm prefix (e.g.
+    # bedrock-mythos -> "bedrock_mantle"), use it so litellm routes
+    # through its native handler for that backend. Defaults to the
+    # gofannon provider key for backwards compatibility.
+    provider_cfg = PROVIDER_CONFIG.get(provider, {})
+    litellm_prefix = provider_cfg.get("litellm_provider_prefix", provider)
+    model_string = f"{litellm_prefix}/{model}"
 
     # Filter out None values from parameters
     filtered_params = {k: v for k, v in parameters.items() if v is not None}
@@ -542,6 +638,21 @@ async def stream_llm(
     # If no user-specific key, litellm will use environment variables
     if api_key:
         kwargs["api_key"] = api_key
+
+    # bedrock-mythos: mint a short-lived Mantle bearer token at
+    # request time, pass it to litellm as api_key. Also pass the
+    # region — litellm uses it to construct the Mantle endpoint URL
+    # (bedrock-mantle.{region}.api.aws/v1); without it litellm
+    # defaults to us-east-1 which doesn't host Mythos.
+    # The bearer token overrides any user-specific key above since
+    # bedrock-mythos auth is account-scoped, not per-user. See
+    # _get_bedrock_mythos_api_key().
+    if provider_cfg.get("assume_role_arn"):
+        kwargs["api_key"] = _get_bedrock_mythos_api_key(
+            assume_role_arn=provider_cfg["assume_role_arn"],
+            region=provider_cfg["aws_region"],
+        )
+        kwargs["aws_region_name"] = provider_cfg["aws_region"]
 
     try:
         response = await litellm.acompletion(**kwargs)
