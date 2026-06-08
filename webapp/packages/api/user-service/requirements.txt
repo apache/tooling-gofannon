@@ -24,3 +24,4 @@ a2wsgi
 google-cloud-logging
 ldap3>=2.9
 aws-bedrock-token-generator>=1.0
+awscrt>=0.20

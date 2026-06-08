@@ -110,9 +110,13 @@ def _get_bedrock_mythos_api_key(
         if (cached["_expires_at"] - now).total_seconds() > _TOKEN_REFRESH_MARGIN_SECONDS:
             return cached["token"]
 
-    # Assume the cross-account role using whatever credentials are
-    # ambient (EC2 instance profile in prod, aws login locally).
-    sts = boto3.client("sts")
+    # Pick a session that ignores env-var credentials when AWS_PROFILE
+    # is set, so dev environments with minioadmin/etc. baked in don't
+    # poison the STS call. Default chain (EC2 instance role via IMDS)
+    # is used in prod where no profile is set.
+    profile = os.environ.get("AWS_PROFILE")
+    session = boto3.Session(profile_name=profile) if profile else boto3.Session()
+    sts = session.client("sts")
     response = sts.assume_role(
         RoleArn=assume_role_arn,
         RoleSessionName="gofannon-bedrock-mythos",
