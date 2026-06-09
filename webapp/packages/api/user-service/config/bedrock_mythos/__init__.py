@@ -1,24 +1,14 @@
-# Mythos preview model configuration (accessed via AWS Bedrock Mantle).
-#
-# Mantle is a distinct Bedrock endpoint
-# (https://bedrock-mantle.{region}.api.aws/v1) with OpenAI-compatible
-# APIs and its own IAM action namespace (bedrock-mantle:*). Mythos is
-# exposed there as anthropic.claude-mythos-preview.
-#
-# Auth flow at request time:
-#   1. boto3 reads ambient credentials (EC2 instance profile in prod,
-#      `aws login` session locally)
-#   2. STS AssumeRole into the cross-account devs role in Anthropic's
-#      preview AWS account (861792231409)
-#   3. aws-bedrock-token-generator mints a SigV4-derived bearer token
-#      from the assumed credentials
-#   4. Bearer token passed to litellm as api_key; litellm routes via
-#      its bedrock_mantle provider to the Mantle endpoint
-#
-# See llm_service._get_bedrock_mythos_api_key() and the bedrock-mythos
-# entry in provider_config.PROVIDER_CONFIG.
-
 models = {
+    # =========================================================================
+    # Anthropic Claude Mythos Preview (via Bedrock Mantle).
+    # 1M token context, 128K max output. Same adaptive thinking shape as
+    # Opus 4.7+/4.8 (thinking={"type":"adaptive"}, output_config={"effort":"high"}).
+    # llm_service.py's existing claude-opus substring detection in
+    # _is_opus_4_7_or_later() does NOT match this model ID — if Mythos
+    # needs the same adaptive-thinking code path, the detection function
+    # may need updating. Worth verifying when Anthropic's setup email
+    # confirms which thinking format Mythos expects.
+    # =========================================================================
     "anthropic.claude-mythos-preview": {
         "returns_thoughts": True,
         "supports_effort": True,
@@ -33,12 +23,26 @@ models = {
                 "description": "Randomness (0=focused, 1=creative). Locked to 1.0 when thinking enabled.",
                 "mutually_exclusive_with": ["top_p"],
             },
+            "top_p": {
+                "type": "float",
+                "default": 0.9,
+                "min": 0.0,
+                "max": 1.0,
+                "description": "Nucleus sampling (0.1=conservative, 0.95=diverse)",
+                "mutually_exclusive_with": ["temperature"],
+            },
+            "reasoning_effort": {
+                "type": "choice",
+                "default": "disable",
+                "choices": ["disable", "low", "medium", "high", "xhigh", "max"],
+                "description": "Reasoning Effort: Enables extended thinking. xhigh/max are Opus 4.7+ only.",
+            },
             "max_tokens": {
                 "type": "integer",
-                "default": 4096,
+                "default": 16384,
                 "min": 1,
-                "max": 131072,
-                "description": "Maximum tokens to generate (up to 128K output).",
+                "max": 128000,
+                "description": "Maximum tokens in response",
             },
         },
     },

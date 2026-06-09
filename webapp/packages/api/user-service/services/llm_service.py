@@ -65,11 +65,14 @@ def _extract_response_cost(response_obj: Any) -> Optional[float]:
 def _is_opus_4_7_or_later(model: str) -> bool:
     """Opus 4.7+ uses adaptive thinking with output_config.effort
     instead of the old reasoning_effort -> thinking.type.enabled
-    translation that litellm does for Opus 4.6 and earlier."""
-    if "claude-opus" not in model:
-        return False
-    if "claude-opus-4-6" in model:
-        return False
+    translation that litellm does for Opus 4.6 and earlier.
+
+    Mythos preview uses the same adaptive thinking shape as Opus 4.7+,
+    so we match it here despite the function name. If more non-Opus
+    models join this club, consider renaming to e.g.
+    _supports_adaptive_thinking."""
+    if "claude-mythos" in model:
+        return True
     return any(tag in model for tag in ("claude-opus-4-7", "claude-opus-4-8"))
 
 
