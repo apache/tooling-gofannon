@@ -512,7 +512,8 @@ async def create_agent(
     agent.rev = saved_doc.get("rev")
 
     logger.log(
-        "INFO", "user_action", f"Agent '{agent.name}' created.",
+        "user_action", f"Agent '{agent.name}' created.",
+        user_id=user.get("uid"),
         metadata={"agent_id": agent.id, "agent_name": agent.name, "request": get_sanitized_request_data(req)}
     )
     return agent
@@ -527,7 +528,7 @@ async def list_agents(
 ):
     """Lists all saved agents."""
     all_docs = await db.list_all("agents")
-    logger.log("INFO", "user_action", "Listed all agents.", metadata={"request": get_sanitized_request_data(req)})
+    logger.log("user_action", "Listed all agents.", user_id=user.get("uid"), metadata={"request": get_sanitized_request_data(req)})
     return [Agent(**doc) for doc in all_docs]
 
 
@@ -573,7 +574,7 @@ async def delete_agent(
         # the agent's friendly_name no longer matches any deployment.
         await undeploy_agent(agent_id, db)
         db.delete("agents", agent_id)
-        logger.log("INFO", "user_action", f"Agent '{agent_id}' deleted.", metadata={"agent_id": agent_id, "request": get_sanitized_request_data(req)})
+        logger.log("user_action", f"Agent '{agent_id}' deleted.", user_id=user.get("uid"), metadata={"agent_id": agent_id, "request": get_sanitized_request_data(req)})
         return
     except HTTPException as e:
         raise e
@@ -612,7 +613,8 @@ async def update_agent(
     updated_agent.rev = saved_doc.get("rev")
 
     logger.log(
-        "INFO", "user_action", f"Agent '{updated_agent.name}' updated.",
+        "user_action", f"Agent '{updated_agent.name}' updated.",
+        user_id=user.get("uid"),
         metadata={"agent_id": agent_id, "agent_name": updated_agent.name, "request": get_sanitized_request_data(req)}
     )
     return updated_agent
@@ -696,8 +698,9 @@ async def run_agent_code_stream(
         data: {{outcome, result, error, schema_warnings, ops_log}}
     """
     logger.log(
-        "INFO", "user_action",
+        "user_action",
         "Attempting to run agent code in sandbox (streaming).",
+        user_id=user.get("uid"),
         metadata={"request": get_sanitized_request_data(req)},
     )
 
@@ -1193,7 +1196,7 @@ async def run_agent_code(
     logger: ObservabilityService = Depends(get_logger)
 ):
     """Executes agent code in a sandboxed environment."""
-    logger.log("INFO", "user_action", "Attempting to run agent code in sandbox.", metadata={"request": get_sanitized_request_data(req)})
+    logger.log("user_action", "Attempting to run agent code in sandbox.", user_id=user.get("uid"), metadata={"request": get_sanitized_request_data(req)})
     try:
         user_basic_info = {
             "email": user.get("email"),
@@ -1243,7 +1246,7 @@ async def run_agent_code(
                 metadata={"warnings": schema_warnings}
             )
 
-        logger.log("INFO", "sandbox_run", "Agent code executed successfully.", metadata={"request": get_sanitized_request_data(req)})
+        logger.log("sandbox_run", "Agent code executed successfully.", user_id=user.get("uid"), metadata={"request": get_sanitized_request_data(req)})
         return RunCodeResponse(
             result=result,
             schema_warnings=schema_warnings or None,
