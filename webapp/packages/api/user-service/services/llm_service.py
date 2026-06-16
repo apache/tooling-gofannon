@@ -144,6 +144,58 @@ def _get_bedrock_mythos_api_key(
     return token
 
 
+def _supports_prompt_caching(provider: str, model: str) -> bool:
+    """Prompt caching via cache_control content blocks is an
+    Anthropic/Bedrock-Claude feature. Restrict to Claude models so the
+    marker is never injected into a provider that would reject or
+    mishandle it. (litellm ignores cache_control for non-Anthropic
+    providers, but being explicit keeps the block-form transform off the
+    OpenAI 'responses' path too.)"""
+    return "claude" in model.lower()
+
+
+def _inject_cache_prefix(
+    messages: List[Dict[str, Any]], cache_prefix: str
+) -> List[Dict[str, Any]]:
+    """Return a NEW message list with `cache_prefix` prepended to the first
+    message as its own cacheable content block. The first message's content
+    is converted to block form so the prefix block can carry cache_control
+    while the original content follows uncached. The caller's list is not
+    mutated.
+
+    Marker is exactly {"type": "ephemeral"} — NO ttl (Bedrock rejects ttl;
+    litellm translates this OpenAI-format marker to Bedrock cachePoint)."""
+    if not messages:
+        return [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": cache_prefix,
+                 "cache_control": {"type": "ephemeral"}},
+            ],
+        }]
+
+    new_messages = [dict(m) for m in messages]
+    first = new_messages[0]
+    original_content = first.get("content", "")
+
+    prefix_block = {
+        "type": "text",
+        "text": cache_prefix,
+        "cache_control": {"type": "ephemeral"},
+    }
+
+    if isinstance(original_content, str):
+        tail_blocks = [{"type": "text", "text": original_content}] if original_content else []
+    elif isinstance(original_content, list):
+        tail_blocks = original_content
+    else:
+        tail_blocks = []
+
+    first["content"] = [prefix_block] + tail_blocks
+    new_messages[0] = first
+    return new_messages
+
+
 async def call_llm(
     provider: str,
     model: str,
@@ -154,6 +206,7 @@ async def call_llm(
     user_id: Optional[str] = None,
     user_basic_info: Optional[Dict[str, Any]] = None,
     timeout: Optional[int] = None,
+    cache_prefix: Optional[str] = None,
 ) -> Tuple[str, Any]:
     """
     Calls the specified language model using litellm, handling different API styles.
@@ -161,6 +214,21 @@ async def call_llm(
 
     Args:
         timeout: Per-call timeout in seconds. Defaults to LLM_TIMEOUT_SECONDS env var (600).
+        cache_prefix: Optional large, stable text (system prompt, ASVS
+            requirement text, shared inventory) to cache across calls that
+            share it. When provided for a Claude model, it is sent as a
+            separate content block marked cache_control={"type":"ephemeral"}
+            ahead of the existing message content. litellm translates that
+            marker to Bedrock's native cachePoint; cached input bills at
+            ~10% on a hit. Ignored for non-Claude models and for the OpenAI
+            'responses' API style (that path builds its own input from the
+            original messages). Prompts under the provider minimum (2,048
+            tokens for Sonnet 4.x) are silently processed without caching —
+            no error — so pass only a genuinely large prefix.
+
+            The marker carries NO ttl field: Bedrock rejects ttl (litellm
+            issues #17250 / #15880); the native Anthropic API accepts it but
+            we target Bedrock.
     """
     check_should_stop()  # ISSUE-007: cancel at structural boundary
     model_config = PROVIDER_CONFIG.get(provider, {}).get("models", {}).get(model, {})
@@ -180,9 +248,17 @@ async def call_llm(
     # Filter out None values from parameters (e.g., top_p with default None)
     filtered_params = {k: v for k, v in parameters.items() if v is not None}
 
+    # Inject a cacheable prefix block when requested and supported. Claude
+    # models only; the OpenAI 'responses' path below builds its own input
+    # from the original `messages`, so leaving effective_messages in
+    # block-form does not affect it.
+    effective_messages = messages
+    if cache_prefix and _supports_prompt_caching(provider, model):
+        effective_messages = _inject_cache_prefix(messages, cache_prefix)
+
     kwargs = {
         "model": model_string,
-        "messages": messages,
+        "messages": effective_messages,
         **filtered_params,
     }
 
