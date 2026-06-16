@@ -1,12 +1,12 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/The-AI-Alliance/gofannon/main/website/static/img/logo_1000x1260.png" alt="Gofannon" width="200">
+  <img src="https://raw.githubusercontent.com/apache/tooling-gofannon/main/website/static/img/logo_1000x1260.png" alt="Gofannon" width="200">
 </p>
 
 # Gofannon
 
 [![PyPI](https://img.shields.io/pypi/v/gofannon)](https://pypi.org/project/gofannon/)
-[![License](https://img.shields.io/github/license/The-AI-Alliance/gofannon)](LICENSE)
-[![Issues](https://img.shields.io/github/issues/The-AI-Alliance/gofannon)](https://github.com/The-AI-Alliance/gofannon/issues)
+[![License](https://img.shields.io/github/license/apache/tooling-gofannon)](LICENSE)
+[![Issues](https://img.shields.io/github/issues/apache/tooling-gofannon)](https://github.com/apache/tooling-gofannon/issues)
 
 Gofannon is a provider- and model-agnostic toolkit and web application for prototyping AI agents and the lightweight web UIs that wrap them. Subject matter experts compose tools, data sources, and decision paths through a guided interface, preview agent interactions in real time, and hand off working agent-driven experiences without committing to a single AI framework or model provider.
 
@@ -19,7 +19,7 @@ Gofannon is a provider- and model-agnostic toolkit and web application for proto
 ## Quickstart
 
 ```bash
-git clone https://github.com/The-AI-Alliance/gofannon.git
+git clone https://github.com/apache/tooling-gofannon.git
 cd gofannon/webapp/infra/docker
 docker-compose up --build
 ```
@@ -46,8 +46,8 @@ Planned features and their current status are tracked in [ROADMAP.md](ROADMAP.md
 
 ## Community
 
-- Report bugs or request features in [GitHub Issues](https://github.com/The-AI-Alliance/gofannon/issues).
-- Ask questions and discuss ideas in [GitHub Discussions](https://github.com/The-AI-Alliance/gofannon/discussions).
+- Report bugs or request features in [GitHub Issues](https://github.com/apache/tooling-gofannon/issues).
+- Ask questions and discuss ideas in [GitHub Discussions](https://github.com/apache/tooling-gofannon/discussions).
 
 ## Contributing
 
