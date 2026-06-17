@@ -905,10 +905,10 @@ async def run_agent_code_stream(
             while True:
                 # Use a heartbeat-style wait so a hung agent eventually
                 # frees the connection if the client disconnected.
-                # 30s is generous; nothing in the trace timing matters
-                # at that resolution.
+                # 10s gives margin against Apache's 60s Timeout even
+                # if intermediate proxies buffer small writes.
                 try:
-                    item = await asyncio.wait_for(queue.get(), timeout=30.0)
+                    item = await asyncio.wait_for(queue.get(), timeout=10.0)
                 except asyncio.TimeoutError:
                     # Heartbeat comment frame keeps proxies from
                     # idling out the connection.
@@ -954,18 +954,6 @@ async def run_agent_code_stream(
             "Connection": "keep-alive",
         },
     )
-
-
-# --- ISSUE-003: run registry endpoints ---
-# Background:
-#   /agents/run-code/stream above couples the agent's lifetime to a single
-#   SSE connection. Closing the tab kills nothing today (the connection
-#   close just unblocks the streamer's `finally`), but reconnecting is
-#   impossible — there's no run_id, the events list isn't addressable.
-#   These endpoints make runs first-class: each one has a UUID, a record
-#   in RunRegistry, and SSE that replays then goes live. See ISSUE-003 for
-#   the full design rationale and follow-ups (CouchDB persistence, stop
-#   button in ISSUE-007).
 
 
 @router.post("/agents/run-code/start", status_code=202)
@@ -1119,7 +1107,7 @@ async def stream_run(run_id: str, user: dict = Depends(get_current_user)):
         try:
             while True:
                 try:
-                    item = await asyncio.wait_for(queue.get(), timeout=30.0)
+                    item = await asyncio.wait_for(queue.get(), timeout=10.0)
                 except asyncio.TimeoutError:
                     yield ": heartbeat\n\n"
                     continue
@@ -1146,9 +1134,6 @@ async def stream_run(run_id: str, user: dict = Depends(get_current_user)):
             "Connection": "keep-alive",
         },
     )
-
-
-# --- ISSUE-007: cooperative cancellation ---
 
 
 @router.post("/runs/{run_id}/stop", status_code=202)
