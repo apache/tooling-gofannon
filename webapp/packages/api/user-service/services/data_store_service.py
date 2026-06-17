@@ -217,6 +217,9 @@ class DataStoreService:
             DATA_STORE_DB,
             {"userId": user_id, "namespace": namespace},
             fields=["key"],
+            limit=None,  # fetch ALL keys; a fixed cap silently truncates
+                         # large namespaces (e.g. repos with >10k files),
+                         # leaving orphaned docs after clear().
         )
 
         keys = [doc.get("key", "") for doc in docs]
@@ -237,6 +240,7 @@ class DataStoreService:
             DATA_STORE_DB,
             {"userId": user_id},
             fields=["namespace"],
+            limit=None,
         )
         namespaces = {doc.get("namespace") or "default" for doc in docs}
         return sorted(namespaces)
@@ -260,6 +264,7 @@ class DataStoreService:
         docs = self.db.find(
             DATA_STORE_DB,
             {"userId": user_id, "namespace": namespace},
+            limit=None,
         )
 
         results = {}
